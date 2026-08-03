@@ -66,7 +66,7 @@ export interface AgentResult {
   trace: AgentTraceEntry[];
   rounds: number;
   durationMs: number;
-  persistenceStatus: "saved" | "error";
+  persistenceStatus: "not-persisted";
 }
 
 export interface RunAgentInput {
@@ -79,6 +79,7 @@ export interface RunAgentInput {
   mode?: "live" | "fixture";
   now?: () => Date;
   monotonicNow?: () => number;
+  signal?: AbortSignal;
 }
 
 interface OllamaToolCall {
@@ -178,30 +179,19 @@ function errorToolResult(toolName: string, error: string, message: string) {
   };
 }
 
-function safeTraceIdentity(
-  value: string | undefined,
-  maximumLength = 160,
-): string | null {
-  if (!value) return null;
-  const trimmed = value.trim();
-  const opaqueIdentity = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
-  const sensitiveLabel =
-    /(?:api[_-]?key|map[_-]?key|authorization|password|secret|token)/i;
-  if (
-    trimmed.length === 0 ||
-    trimmed.length > maximumLength ||
-    !opaqueIdentity.test(trimmed) ||
-    sensitiveLabel.test(trimmed)
-  ) {
-    return "[redacted-identity]";
-  }
-  return trimmed;
+interface NumericClaim {
+  value: number;
+  index: number;
 }
 
-function numericClaims(value: string): number[] {
-  return [...value.matchAll(/(?<![A-Za-z])\d+(?:\.\d+)?/g)]
-    .map(([match]) => Number(match))
-    .filter(Number.isFinite);
+function numericClaims(value: string): NumericClaim[] {
+  return [...value.matchAll(/(?<![A-Za-z0-9])[-+]?\d+(?:\.\d+)?/g)]
+    .flatMap((match) => {
+      const number = Number(match[0]);
+      return Number.isFinite(number) && match.index !== undefined
+        ? [{ value: number, index: match.index }]
+        : [];
+    });
 }
 
 const CITATION_PATTERN = /\[evidence:([A-Za-z0-9_-]{1,64})\]/g;
@@ -282,61 +272,6 @@ const CLAIM_FRAMING_TERMS = new Set([
   "your",
 ]);
 
-const TOOL_EVIDENCE_TERMS: Record<string, string[]> = {
-  list_assets: ["asset", "saved", "available"],
-  inspect_asset: [
-    "asset",
-    "saved",
-    "available",
-    "activity",
-    "alert",
-    "assessment",
-    "context",
-    "detection",
-    "nearby",
-  ],
-  refresh_asset_data: [
-    "asset",
-    "refresh",
-    "refreshed",
-    "fresh",
-    "activity",
-    "detection",
-  ],
-  get_activity_groups: [
-    "activity",
-    "assessment",
-    "context",
-    "detection",
-    "group",
-    "satellite",
-  ],
-  get_weather_context: [
-    "weather",
-    "wind",
-    "moving",
-    "humidity",
-    "nws",
-    "context",
-  ],
-  get_air_quality: ["air", "quality", "aqi", "airnow"],
-  get_official_incidents: [
-    "official",
-    "incident",
-    "perimeter",
-    "confirmed",
-    "wildfire",
-  ],
-  get_timeline: ["activity", "detection", "recent", "satellite", "timeline"],
-  explain_assessment: [
-    "assessment",
-    "context",
-    "deterministic",
-    "reason",
-    "score",
-  ],
-};
-
 function normalizedToken(value: string): string {
   if (value === "firms" || value === "nws" || value === "aqi") return value;
   if (value.endsWith("ies") && value.length > 4) return `${value.slice(0, -3)}y`;
@@ -356,6 +291,238 @@ function lexicalTokens(value: string): string[] {
   return [...expanded.matchAll(/[a-z][a-z0-9]*/g)].map(([token]) =>
     normalizedToken(token),
   );
+}
+
+const FIELD_LABEL_ALIASES: Record<string, string[]> = {
+  lat: ["latitude"],
+  lon: ["longitude"],
+  radiusKm: ["radius", "radius kilometers"],
+  distanceKm: ["distance", "distance kilometers"],
+  ageHours: ["age", "age hours"],
+  detectionCount: ["detection count", "detections"],
+  activityGroupCount: ["activity group count", "activity groups"],
+  relativeHumidityPct: [
+    "relative humidity",
+    "humidity",
+    "humidity percent",
+    "humidity percentage",
+  ],
+  windSpeedMps: ["wind speed", "speed", "moving"],
+  windFromDeg: ["wind direction", "direction"],
+  pm25UgM3: ["pm25", "pm 2 5"],
+  frpMw: ["frp", "fire radiative power"],
+  maxFrpMw: ["maximum frp", "maximum fire radiative power"],
+  percentContained: ["percent contained", "containment", "contained"],
+  scoreRange: ["score range", "range"],
+  dataConfidence: ["data confidence"],
+  distinctPasses24h: ["distinct passes", "passes"],
+  bearingClusterToAsset: ["bearing", "bearing to asset"],
+};
+
+const SOURCE_SELECTOR_ALIASES: Record<string, string[]> = {
+  firms: ["firms", "nasa firms"],
+  nws: ["nws", "national weather service"],
+  airnow: ["airnow", "air now"],
+  wfigs: ["wfigs"],
+};
+
+interface EvidenceNumericFact {
+  value: number;
+  labels: string[];
+}
+
+interface EvidenceStateFact {
+  kind: "mode" | "status";
+  value: string;
+  path: string[];
+}
+
+interface EvidenceIndex {
+  terms: Set<string>;
+  numbers: EvidenceNumericFact[];
+  states: EvidenceStateFact[];
+}
+
+function fieldLabels(path: string[]): string[] {
+  const field = path.at(-1);
+  if (!field) return [];
+  const rawLabel = lexicalTokens(field).join(" ");
+  return [rawLabel, ...(FIELD_LABEL_ALIASES[field] ?? [])].filter(Boolean);
+}
+
+function addLexicalTerms(target: Set<string>, value: string): void {
+  for (const token of lexicalTokens(value)) target.add(token);
+}
+
+function sourceSelector(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const terms = lexicalTokens(value);
+  return (
+    Object.entries(SOURCE_SELECTOR_ALIASES).find(([, aliases]) =>
+      aliases.some((alias) => containsTokenSequence(terms, alias)),
+    )?.[0] ?? null
+  );
+}
+
+function addEvidenceValue(
+  index: EvidenceIndex,
+  value: unknown,
+  path: string[],
+): void {
+  const field = path.at(-1);
+  if (field) {
+    addLexicalTerms(index.terms, field);
+    for (const alias of FIELD_LABEL_ALIASES[field] ?? []) {
+      addLexicalTerms(index.terms, alias);
+    }
+  }
+
+  if (Array.isArray(value)) {
+    if (field) {
+      index.numbers.push({ value: value.length, labels: fieldLabels(path) });
+    }
+    if (value.length > 0 && field === "assets") {
+      addLexicalTerms(index.terms, "saved available");
+    }
+    if (value.length > 0 && field === "activityGroups") {
+      addLexicalTerms(index.terms, "nearby available");
+    }
+    for (const entry of value) addEvidenceValue(index, entry, path);
+    return;
+  }
+
+  const record = asRecord(value);
+  if (record) {
+    const selector = sourceSelector(record.source);
+    const childPath =
+      selector && !path.includes(selector) ? [...path, selector] : path;
+    for (const [key, entry] of Object.entries(record)) {
+      addEvidenceValue(index, entry, [...childPath, key]);
+    }
+    return;
+  }
+
+  if (typeof value === "string") {
+    addLexicalTerms(index.terms, value);
+    for (const claim of numericClaims(value)) {
+      index.numbers.push({ value: claim.value, labels: fieldLabels(path) });
+    }
+    if ((field === "mode" || field === "status") && value.trim()) {
+      index.states.push({
+        kind: field,
+        value: value.trim().toLowerCase().replaceAll("_", "-"),
+        path,
+      });
+    }
+    if (
+      field === "type" &&
+      value.toUpperCase() === "WF" &&
+      path.includes("incidents")
+    ) {
+      addLexicalTerms(index.terms, "confirmed official wildfire incident");
+    }
+    return;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    index.numbers.push({ value, labels: fieldLabels(path) });
+    return;
+  }
+
+  if (value === true && field === "refreshed") {
+    addLexicalTerms(index.terms, "fresh refreshed");
+  }
+}
+
+function evidenceIndex(entries: AgentTraceEntry[]): EvidenceIndex {
+  const index: EvidenceIndex = {
+    terms: new Set<string>(),
+    numbers: [],
+    states: [],
+  };
+  for (const entry of entries) {
+    addEvidenceValue(index, entry.resultSummary, []);
+  }
+  return index;
+}
+
+function containsTokenSequence(haystack: string[], phrase: string): boolean {
+  const needle = lexicalTokens(phrase);
+  return (
+    needle.length > 0 &&
+    haystack.some((_token, start) =>
+      needle.every((token, offset) => haystack[start + offset] === token),
+    )
+  );
+}
+
+function hasSupportedNumericClaims(
+  sentence: string,
+  index: EvidenceIndex,
+): boolean {
+  return numericClaims(sentence).every((claim) => {
+    const nearbyTerms = lexicalTokens(
+      sentence.slice(
+        Math.max(0, claim.index - 96),
+        Math.min(sentence.length, claim.index + 64),
+      ),
+    );
+    return index.numbers.some(
+      (fact) =>
+        Object.is(fact.value, claim.value) &&
+        fact.labels.some((label) => containsTokenSequence(nearbyTerms, label)),
+    );
+  });
+}
+
+function stateMentions(
+  sentence: string,
+): Array<{ kind: "mode" | "status"; value: string }> {
+  const normalized = sentence.toLowerCase();
+  const mentions: Array<{ kind: "mode" | "status"; value: string }> = [];
+  for (const match of normalized.matchAll(/\b(?:live|fixture)\b/g)) {
+    mentions.push({ kind: "mode", value: match[0] });
+  }
+  for (const match of normalized.matchAll(
+    /\b(?:ok|partial|error|missing[- ]key|not[- ]requested)\b/g,
+  )) {
+    mentions.push({
+      kind: "status",
+      value: match[0].replace(" ", "-"),
+    });
+  }
+  return mentions;
+}
+
+function hasSupportedStateClaims(
+  sentence: string,
+  index: EvidenceIndex,
+): boolean {
+  const sentenceTerms = lexicalTokens(sentence);
+  const namedSources = Object.entries(SOURCE_SELECTOR_ALIASES).flatMap(
+    ([source, aliases]) =>
+      aliases.some((alias) => containsTokenSequence(sentenceTerms, alias))
+        ? [source]
+        : [],
+  );
+  return stateMentions(sentence).every((mention) => {
+    const matching = index.states.filter(
+      (fact) => fact.kind === mention.kind && fact.value === mention.value,
+    );
+    if (matching.length === 0) return false;
+    if (namedSources.length > 0) {
+      return matching.some((fact) =>
+        namedSources.every((source) => fact.path.includes(source)),
+      );
+    }
+    const unscoped = matching.some((fact) => {
+      const parent = fact.path.at(-2);
+      return parent === "data" || parent === undefined;
+    });
+    const allFacts = index.states.filter((fact) => fact.kind === mention.kind);
+    if (sentenceTerms.includes(mention.kind) && unscoped) return true;
+    return allFacts.every((fact) => fact.value === mention.value);
+  });
 }
 
 function claimSentences(answer: string): string[] {
@@ -379,9 +546,7 @@ function isAllowedUncitedSentence(sentence: string): boolean {
     /^follow (?:local )?emergency officials(?: and nws alerts)?[.!]?$/.test(
       normalized,
     ) ||
-    /^(?:ask|consider|identify|prepare)\b.*\blow[- ]risk\b.*\bquestions?\b[.!?]?$/.test(
-      normalized,
-    ) ||
+    normalized === "consider low-risk preparation questions." ||
     /^data may be (?:delayed|incomplete|inaccurate)(?:,? (?:or|and) (?:delayed|incomplete|inaccurate))*[.!]?$/.test(
       normalized,
     )
@@ -389,15 +554,19 @@ function isAllowedUncitedSentence(sentence: string): boolean {
 }
 
 function isNegatedAt(sentence: string, index: number): boolean {
-  const prefix = sentence.slice(Math.max(0, index - 120), index);
+  const prefix = sentence.slice(Math.max(0, index - 96), index);
   const clause =
-    prefix.split(/[.;!?]|\b(?:and|but|however|or)\b/i).at(-1) ?? prefix;
+    prefix
+      .split(
+        /[,.;!?]|\b(?:and|but|however|or|because|although|while|whereas|so)\b/i,
+      )
+      .at(-1) ?? prefix;
   const negations = [
     ...clause.matchAll(/\b(?:no|not|never|cannot|can't|does not|doesn't|do not|without)\b/gi),
   ];
   const lastNegation = negations.at(-1);
   if (!lastNegation || lastNegation.index === undefined) return false;
-  return lexicalTokens(clause.slice(lastNegation.index)).length <= 10;
+  return lexicalTokens(clause.slice(lastNegation.index)).length <= 3;
 }
 
 function hasUnsupportedSafetyAssertion(sentence: string): boolean {
@@ -413,10 +582,15 @@ function hasUnsupportedSafetyAssertion(sentence: string): boolean {
       );
       const negatedAfter =
         /^\W*(?:(?:is|are|was|were)\W+)?(?:no|not|never)\b/i.test(suffix);
+      const deniedEvidenceConclusion =
+        /\b(?:do|does|did|can|could|would)\s+not\s+(?:establish|show|confirm|mean)\b[^,.;!?]*$/i.test(
+          sentence.slice(0, match.index),
+        );
       return (
         !lowRiskQualifier &&
         !isNegatedAt(sentence, match.index) &&
-        !negatedAfter
+        !negatedAfter &&
+        !deniedEvidenceConclusion
       );
     });
   if (
@@ -427,7 +601,7 @@ function hasUnsupportedSafetyAssertion(sentence: string): boolean {
     return true;
   }
   const fireContext =
-    /\b(?:wildfires?|fires?|detections?|activity|incidents?|perimeters?|smoke|flames?)\b/i.test(
+    /\b(?:wildfires?|fires?|detections?|activity|clusters?|groups?|incidents?|perimeters?|smoke|flames?)\b/i.test(
       sentence,
     );
   const windOnly = /\bwinds?\b/i.test(sentence) && !fireContext;
@@ -501,14 +675,8 @@ function hasMatchingOfficialIncident(
 
 function hasLexicalEvidence(
   sentence: string,
-  entries: AgentTraceEntry[],
+  index: EvidenceIndex,
 ): boolean {
-  const evidenceTerms = new Set(
-    entries.flatMap((entry) => [
-      ...lexicalTokens(JSON.stringify(entry.resultSummary)),
-      ...(TOOL_EVIDENCE_TERMS[entry.toolName] ?? []).map(normalizedToken),
-    ]),
-  );
   const claimTerms = [
     ...new Set(
       lexicalTokens(sentence.replace(CITATION_PATTERN, "")).filter(
@@ -518,7 +686,7 @@ function hasLexicalEvidence(
   ];
   return (
     claimTerms.length > 0 &&
-    claimTerms.every((token) => evidenceTerms.has(token))
+    claimTerms.every((token) => index.terms.has(token))
   );
 }
 
@@ -562,29 +730,24 @@ export function isAnswerGrounded(
         sentenceCitations.map((reference) => successfulEvidence.get(reference)!),
       ),
     ];
-    const evidenceNumbers = new Set(
-      numericClaims(
-        JSON.stringify(citedEntries.map(({ resultSummary }) => resultSummary)),
-      ),
-    );
-    if (!numericClaims(claim).every((number) => evidenceNumbers.has(number))) {
-      return false;
-    }
+    const index = evidenceIndex(citedEntries);
+    if (!hasSupportedNumericClaims(claim, index)) return false;
+    if (!hasSupportedStateClaims(claim, index)) return false;
     if (
       confirmation !== null &&
       !hasMatchingOfficialIncident(claim, citedEntries)
     ) {
       return false;
     }
-    return hasLexicalEvidence(claim, citedEntries);
+    return hasLexicalEvidence(claim, index);
   });
 }
 
 const fallbackAnswers = {
   offline:
-    "Local Gemma is offline. Deterministic monitoring remains available; review the source states and follow local emergency officials and NWS alerts.",
+    "Local Gemma is offline. Start Ollama and warm gemma4:12b, then retry. Deterministic monitoring remains available; review the source states and follow local emergency officials and NWS alerts.",
   timeout:
-    "Local Gemma timed out. Deterministic monitoring remains available; review the source states and follow local emergency officials and NWS alerts.",
+    "Local Gemma timed out. A cold model may need a warm-up; run ollama run gemma4:12b, then retry. Deterministic monitoring remains available; review the source states and follow local emergency officials and NWS alerts.",
   roundLimit:
     "The local agent reached its tool-round limit before producing a briefing. Review the visible evidence trace and source states, and follow local emergency officials and NWS alerts.",
   grounding:
@@ -607,7 +770,10 @@ interface AgentDeadline {
   cancel(): void;
 }
 
-function createAgentDeadline(timeoutMs: number): AgentDeadline {
+function createAgentDeadline(
+  timeoutMs: number,
+  externalSignal?: AbortSignal,
+): AgentDeadline {
   const controller = new AbortController();
   let expired = false;
   let rejectExpiration!: (error: AgentDeadlineError) => void;
@@ -615,11 +781,19 @@ function createAgentDeadline(timeoutMs: number): AgentDeadline {
     rejectExpiration = reject;
   });
   void expiration.catch(() => undefined);
-  const timeout = setTimeout(() => {
+  const expire = () => {
+    if (expired) return;
     expired = true;
     controller.abort();
     rejectExpiration(new AgentDeadlineError());
-  }, timeoutMs);
+  };
+  const timeout = setTimeout(expire, timeoutMs);
+  const abortFromCaller = () => expire();
+  if (externalSignal?.aborted) {
+    expire();
+  } else {
+    externalSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  }
 
   return {
     signal: controller.signal,
@@ -636,34 +810,9 @@ function createAgentDeadline(timeoutMs: number): AgentDeadline {
     },
     cancel() {
       clearTimeout(timeout);
+      externalSignal?.removeEventListener("abort", abortFromCaller);
     },
   };
-}
-
-async function persistResult(
-  input: RunAgentInput,
-  result: Omit<AgentResult, "persistenceStatus">,
-  deadline: AgentDeadline,
-): Promise<AgentResult> {
-  if (deadline.expired()) return { ...result, persistenceStatus: "error" };
-  try {
-    await deadline.run(() =>
-      input.repository.saveAgentRun(
-        {
-          assetId: input.assetId,
-          prompt: input.prompt,
-          answer: result.answer,
-          model: GEMMA_MODEL,
-          trace: result.trace,
-          durationMs: result.durationMs,
-        },
-        deadline.signal,
-      ),
-    );
-    return { ...result, persistenceStatus: "saved" };
-  } catch {
-    return { ...result, persistenceStatus: "error" };
-  }
 }
 
 export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
@@ -679,7 +828,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   const monotonicNow = input.monotonicNow ?? (() => performance.now());
   const startedAt = monotonicNow();
   const trace: AgentTraceEntry[] = [];
-  const deadline = createAgentDeadline(AGENT_TIMEOUT_MS);
+  const deadline = createAgentDeadline(AGENT_TIMEOUT_MS, input.signal);
   let totalToolCalls = 0;
   let refreshCalls = 0;
   const context: AgentToolContext = {
@@ -693,23 +842,19 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     { role: "system", content: AGENT_SYSTEM_PROMPT },
     { role: "user", content: parsedRequest.prompt },
   ];
-  const finish = async (
+  const finish = (
     status: AgentRunStatus,
     answer: string,
     rounds: number,
-  ) =>
-    persistResult(
-      input,
-      {
-        status,
-        answer,
-        model: GEMMA_MODEL,
-        trace,
-        rounds,
-        durationMs: Math.max(0, Math.round(monotonicNow() - startedAt)),
-      },
-      deadline,
-    );
+  ): AgentResult => ({
+    status,
+    answer,
+    model: GEMMA_MODEL,
+    trace,
+    rounds,
+    durationMs: Math.max(0, Math.round(monotonicNow() - startedAt)),
+    persistenceStatus: "not-persisted",
+  });
 
   try {
     for (let round = 1; round <= AGENT_MAX_ROUNDS; round += 1) {
@@ -786,8 +931,9 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
       for (const call of calls) {
         const toolStartedAt = monotonicNow();
         const toolName = call.function.name;
-        const visibleToolName =
-          safeTraceIdentity(toolName) ?? "[unknown-tool]";
+        const visibleToolName = isAgentToolName(toolName)
+          ? toolName
+          : "[unknown-tool]";
         const candidateEvidenceRef = String(trace.length + 1);
         let evidenceRef: string | null = null;
         let validatedArguments: Record<string, unknown> | null = null;
@@ -867,7 +1013,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
 
         trace.push({
           evidenceRef,
-          callId: safeTraceIdentity(call.id),
+          callId: `trace-${trace.length + 1}`,
           functionIndex: call.function.index ?? null,
           toolName: visibleToolName,
           validatedArguments:

@@ -20,7 +20,7 @@ import {
   runAgent,
   type AgentTraceEntry,
 } from "../lib/agent/ollama";
-import type { SavedAsset, StoredAgentRun } from "../lib/server/repository";
+import type { SavedAsset } from "../lib/server/repository";
 import { buildSnapshot, type Snapshot } from "../lib/server/snapshot";
 
 const fixedNow = new Date("2026-08-03T12:00:00.000Z");
@@ -123,7 +123,7 @@ describe("Gemma native tool loop", () => {
     vi.useRealTimers();
   });
 
-  it("executes an allowlisted tool and preserves native call identity in history", async () => {
+  it("uses a generated trace identity while preserving native call identity in history", async () => {
     const ollama = mockOllama([
       toolCall("inspect_asset", { assetId: asset.id }, "call-inspect", 4),
       assistant("The orchard has elevated context because recent detections are nearby. [evidence:1]"),
@@ -134,7 +134,7 @@ describe("Gemma native tool loop", () => {
     expect(result.status).toBe("ok");
     expect(result.answer).toContain("elevated context");
     expect(result.trace[0]).toMatchObject({
-      callId: "call-inspect",
+      callId: "trace-1",
       functionIndex: 4,
       toolName: "inspect_asset",
       validatedArguments: { assetId: asset.id },
@@ -190,7 +190,7 @@ describe("Gemma native tool loop", () => {
 
     expect(result.status).toBe("grounding-error");
     expect(result.trace[0]).toMatchObject({
-      toolName: "delete_asset",
+      toolName: "[unknown-tool]",
       status: "unknown-tool",
       validatedArguments: null,
     });
@@ -345,8 +345,7 @@ describe("Gemma native tool loop", () => {
     );
   });
 
-  it("returns after the shared deadline when persistence is stalled", async () => {
-    vi.useFakeTimers();
+  it("never starts automatic agent-run persistence", async () => {
     const ollama = mockOllama([
       toolCall("list_assets", {}),
       assistant("The saved orchard is available. [evidence:1]"),
@@ -360,57 +359,14 @@ describe("Gemma native tool loop", () => {
       repository,
       snapshotService,
     });
-    await vi.advanceTimersByTimeAsync(45_000);
 
     await expect(pending).resolves.toEqual(
-      expect.objectContaining({ status: "ok", persistenceStatus: "error" }),
+      expect.objectContaining({
+        status: "ok",
+        persistenceStatus: "not-persisted",
+      }),
     );
-  });
-
-  it("aborts delayed persistence before it can mutate after the response timeout", async () => {
-    vi.useFakeTimers();
-    const ollama = mockOllama([
-      toolCall("list_assets", {}),
-      assistant("The saved orchard is available. [evidence:1]"),
-    ]);
-    const { repository, snapshotService } = harness();
-    const mutations: string[] = [];
-    repository.saveAgentRun = vi.fn(
-      async (input, signal): Promise<StoredAgentRun> =>
-        new Promise<StoredAgentRun>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            mutations.push(input.answer);
-            resolve({
-              ...input,
-              id: "late-agent-run",
-              createdAt: fixedNow.toISOString(),
-            });
-          }, 50_000);
-          signal?.addEventListener(
-            "abort",
-            () => {
-              clearTimeout(timer);
-              reject(signal.reason);
-            },
-            { once: true },
-          );
-        }),
-    );
-
-    const pending = runAgent({
-      ...runInput(ollama.fetchImplementation),
-      repository,
-      snapshotService,
-    });
-    await vi.advanceTimersByTimeAsync(45_000);
-    await expect(pending).resolves.toMatchObject({ persistenceStatus: "error" });
-    await vi.advanceTimersByTimeAsync(10_000);
-
-    expect(mutations).toEqual([]);
-    expect(repository.saveAgentRun).toHaveBeenCalledWith(
-      expect.any(Object),
-      expect.any(AbortSignal),
-    );
+    expect(repository.saveAgentRun).not.toHaveBeenCalled();
   });
 
   it("stops after six tool-call rounds", async () => {
@@ -826,19 +782,17 @@ describe("Gemma native tool loop", () => {
       repository,
       snapshotService,
     });
-    const persisted = vi.mocked(repository.saveAgentRun).mock.calls[0]?.[0];
     const continuation = ollama.requests[1] as {
       messages: Array<Record<string, unknown>>;
     };
 
     expect(JSON.stringify(result.trace)).not.toContain(callSecret);
     expect(JSON.stringify(result.trace)).not.toContain(nameSecret);
-    expect(JSON.stringify(persisted?.trace)).not.toContain(callSecret);
-    expect(JSON.stringify(persisted?.trace)).not.toContain(nameSecret);
+    expect(repository.saveAgentRun).not.toHaveBeenCalled();
     expect(JSON.stringify(continuation.messages)).toContain(callSecret);
     expect(result.trace[0]).toMatchObject({
-      callId: "[redacted-identity]",
-      toolName: "[redacted-identity]",
+      callId: "trace-1",
+      toolName: "[unknown-tool]",
     });
   });
 
