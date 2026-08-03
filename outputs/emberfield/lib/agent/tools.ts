@@ -31,7 +31,7 @@ export interface AgentRepository {
 
 export type SnapshotService = (
   asset: SavedAsset,
-  options: { refresh: boolean },
+  options: { refresh: boolean; signal?: AbortSignal },
 ) => Promise<Snapshot>;
 
 export interface AgentToolDefinition {
@@ -210,6 +210,7 @@ export interface AgentToolContext {
   repository: AgentRepository;
   snapshotService: SnapshotService;
   snapshots: Map<string, Snapshot>;
+  signal: AbortSignal;
 }
 
 export interface AgentToolExecution {
@@ -232,6 +233,15 @@ const sourceEvidence = (snapshot: Snapshot) =>
       },
     ]),
   );
+
+function ensureActive(context: AgentToolContext): void {
+  if (context.signal.aborted) {
+    throw new AgentToolExecutionError(
+      "deadline-reached",
+      "The agent deadline was reached",
+    );
+  }
+}
 
 const assetEvidence = (savedAsset: SavedAsset) => ({
   id: savedAsset.id,
@@ -279,11 +289,14 @@ async function resolveAsset(
   context: AgentToolContext,
   requestedAssetId: unknown,
 ): Promise<SavedAsset> {
+  ensureActive(context);
   const assetId =
     typeof requestedAssetId === "string"
       ? requestedAssetId
       : context.activeAssetId;
-  const savedAsset = (await context.repository.listAssets()).find(
+  const assets = await context.repository.listAssets();
+  ensureActive(context);
+  const savedAsset = assets.find(
     (candidate) => candidate.id === assetId,
   );
   if (!savedAsset) {
@@ -300,13 +313,22 @@ async function snapshotFor(
   savedAsset: SavedAsset,
   refresh = false,
 ): Promise<Snapshot> {
+  ensureActive(context);
   if (!refresh) {
     const existing = context.snapshots.get(savedAsset.id);
     if (existing) return existing;
   }
-  const snapshot = await context.snapshotService(savedAsset, { refresh });
+  const snapshot = await context.snapshotService(savedAsset, {
+    refresh,
+    signal: context.signal,
+  });
+  ensureActive(context);
   context.snapshots.set(savedAsset.id, snapshot);
-  if (refresh) await context.repository.saveSnapshot(snapshot);
+  if (refresh) {
+    ensureActive(context);
+    await context.repository.saveSnapshot(snapshot);
+    ensureActive(context);
+  }
   return snapshot;
 }
 
@@ -346,10 +368,13 @@ export async function executeAgentTool(
   argumentsValue: ParsedArguments,
   context: AgentToolContext,
 ): Promise<AgentToolExecution> {
+  ensureActive(context);
   if (toolName === "list_assets") {
+    const assets = await context.repository.listAssets();
+    ensureActive(context);
     return {
       data: {
-        assets: (await context.repository.listAssets()).map(assetEvidence),
+        assets: assets.map(assetEvidence),
         missingData: [],
       },
       sourceStatus: null,
@@ -378,7 +403,9 @@ export async function executeAgentTool(
   const sources = sourceEvidence(snapshot);
 
   if (toolName === "inspect_asset") {
+    ensureActive(context);
     const alerts = await context.repository.listAlerts(savedAsset.id);
+    ensureActive(context);
     return {
       data: {
         asset: assetEvidence(savedAsset),
@@ -550,9 +577,11 @@ function sanitizeUrl(value: string): string {
         "$1[redacted]",
       );
     }
+    url.search = "";
+    url.hash = "";
     return url.toString();
   } catch {
-    return value;
+    return "[redacted-url]";
   }
 }
 
@@ -591,19 +620,38 @@ export function sanitizeAgentValue(value: unknown, depth = 0): unknown {
 
 const utf8Length = (value: string) => new TextEncoder().encode(value).byteLength;
 
-const truncateUtf8 = (value: string, maximumBytes: number) => {
-  if (utf8Length(value) <= maximumBytes) return value;
-  const ellipsis = "…";
-  const contentBudget = Math.max(0, maximumBytes - utf8Length(ellipsis));
+function serializedPreview(
+  base: Record<string, unknown>,
+  source: string,
+  maximumBytes: number,
+): { value: unknown; json: string } {
+  const limit = Math.max(1, Math.floor(maximumBytes));
+  const minimalJson = JSON.stringify(base);
+  if (utf8Length(minimalJson) > limit) {
+    return { value: 0, json: "0" };
+  }
+  const characters = Array.from(source);
   let low = 0;
-  let high = value.length;
+  let high = characters.length;
+  let bestValue: unknown = base;
+  let bestJson = minimalJson;
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (utf8Length(value.slice(0, middle)) <= contentBudget) low = middle;
-    else high = middle - 1;
+    const value = {
+      ...base,
+      preview: `${characters.slice(0, middle).join("")}…`,
+    };
+    const json = JSON.stringify(value);
+    if (utf8Length(json) <= limit) {
+      low = middle;
+      bestValue = value;
+      bestJson = json;
+    } else {
+      high = middle - 1;
+    }
   }
-  return `${value.slice(0, low)}${ellipsis}`;
-};
+  return { value: bestValue, json: bestJson };
+}
 
 export interface BoundedToolResult {
   value: unknown;
@@ -615,8 +663,14 @@ export function boundToolResult(
   toolName: string,
   result: unknown,
   maximumBytes = 6_000,
+  evidenceRef?: string,
 ): BoundedToolResult {
-  const sanitized = sanitizeAgentValue({ ok: true, toolName, data: result });
+  const sanitized = sanitizeAgentValue({
+    ok: true,
+    toolName,
+    ...(evidenceRef ? { evidenceRef } : {}),
+    data: result,
+  });
   const json = JSON.stringify(sanitized);
   if (utf8Length(json) <= maximumBytes) {
     return {
@@ -625,18 +679,18 @@ export function boundToolResult(
       summary:
         utf8Length(json) <= 4_000
           ? sanitized
-          : { truncated: true, preview: truncateUtf8(json, 3_800) },
+          : serializedPreview({ truncated: true }, json, 4_000).value,
     };
   }
-  const value = {
+  const bounded = serializedPreview({
     ok: true,
     toolName,
+    ...(evidenceRef ? { evidenceRef } : {}),
     truncated: true,
-    preview: truncateUtf8(json, Math.max(256, maximumBytes - 256)),
-  };
+  }, json, maximumBytes);
   return {
-    value,
-    json: JSON.stringify(value),
-    summary: value,
+    value: bounded.value,
+    json: bounded.json,
+    summary: bounded.value,
   };
 }

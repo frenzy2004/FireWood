@@ -18,6 +18,9 @@ import {
 export const GEMMA_MODEL = "gemma4:12b";
 export const AGENT_TIMEOUT_MS = 45_000;
 export const AGENT_MAX_ROUNDS = 6;
+export const AGENT_MAX_CALLS_PER_ROUND = 9;
+export const AGENT_MAX_TOOL_CALLS = 18;
+export const AGENT_MAX_REFRESH_CALLS = 1;
 
 export const agentRequestSchema = z
   .object({
@@ -28,7 +31,7 @@ export const agentRequestSchema = z
   .strict();
 
 export const AGENT_SYSTEM_PROMPT = `You are EmberField's local agricultural evidence assistant.
-Use only values returned by the provided tools. Call satellite heat anomalies "detections", never confirmed fires unless an official incident tool confirms one. Name missing, stale, partial, missing-key, error, live, and fixture source states explicitly. Do not invent observations, alter deterministic scores, predict spread, or issue evacuation, dispatch, firefighting, or protection-of-life or property instructions. You may suggest low-risk questions for farm continuity planning. Follow local emergency officials and NWS alerts. Data may be delayed, incomplete, or inaccurate.`;
+Use only values returned by the provided tools. Every condition or source assertion in a final briefing must cite a successful tool's server-issued evidenceRef exactly as [evidence:REF]. Never cite a failed call. Call satellite heat anomalies "detections", never confirmed fires unless an official incident tool confirms one. Name missing, stale, partial, missing-key, error, live, and fixture source states explicitly. Do not invent observations, alter deterministic scores, predict spread, or issue evacuation, dispatch, firefighting, or protection-of-life or property instructions. You may suggest low-risk questions for farm continuity planning. Follow local emergency officials and NWS alerts. Data may be delayed, incomplete, or inaccurate.`;
 
 export type AgentRunStatus =
   | "ok"
@@ -45,6 +48,7 @@ export type AgentTraceStatus =
   | "tool-error";
 
 export interface AgentTraceEntry {
+  evidenceRef: string | null;
   callId: string | null;
   functionIndex: number | null;
   toolName: string;
@@ -174,6 +178,17 @@ function errorToolResult(toolName: string, error: string, message: string) {
   };
 }
 
+function safeTraceIdentity(
+  value: string | undefined,
+  maximumLength = 160,
+): string | null {
+  if (!value) return null;
+  const sanitized = sanitizeAgentValue(value);
+  return typeof sanitized === "string"
+    ? sanitized.slice(0, maximumLength)
+    : "[redacted-identity]";
+}
+
 function numericClaims(value: string): number[] {
   return [...value.matchAll(/(?<![A-Za-z])\d+(?:\.\d+)?/g)]
     .map(([match]) => Number(match))
@@ -181,10 +196,31 @@ function numericClaims(value: string): number[] {
 }
 
 function isAnswerGrounded(answer: string, trace: AgentTraceEntry[]): boolean {
-  const claims = numericClaims(answer);
+  const citationPattern = /\[evidence:([A-Za-z0-9_-]{1,64})\]/g;
+  const successfulEvidence = new Map(
+    trace.flatMap((entry) =>
+      entry.status === "ok" && entry.evidenceRef
+        ? [[entry.evidenceRef, entry] as const]
+        : [],
+    ),
+  );
+  const citations = [...answer.matchAll(citationPattern)].map(
+    (match) => match[1],
+  );
+  if (
+    successfulEvidence.size === 0 ||
+    citations.length === 0 ||
+    citations.some((reference) => !successfulEvidence.has(reference))
+  ) {
+    return false;
+  }
+  const claims = numericClaims(answer.replace(citationPattern, ""));
   if (claims.length === 0) return true;
+  const citedEntries = [
+    ...new Set(citations.map((reference) => successfulEvidence.get(reference)!)),
+  ];
   const evidenceNumbers = new Set(
-    numericClaims(JSON.stringify(trace.map(({ resultSummary }) => resultSummary))),
+    numericClaims(JSON.stringify(citedEntries.map(({ resultSummary }) => resultSummary))),
   );
   return claims.every((claim) => evidenceNumbers.has(claim));
 }
@@ -202,19 +238,70 @@ const fallbackAnswers = {
     "The local agent could not complete this briefing. Deterministic monitoring remains available; review source states and follow local emergency officials and NWS alerts.",
 } as const;
 
+class AgentDeadlineError extends Error {
+  constructor() {
+    super("The agent deadline was reached");
+    this.name = "AgentDeadlineError";
+  }
+}
+
+interface AgentDeadline {
+  signal: AbortSignal;
+  expired(): boolean;
+  run<T>(operation: () => Promise<T>): Promise<T>;
+  cancel(): void;
+}
+
+function createAgentDeadline(timeoutMs: number): AgentDeadline {
+  const controller = new AbortController();
+  let expired = false;
+  let rejectExpiration!: (error: AgentDeadlineError) => void;
+  const expiration = new Promise<never>((_resolve, reject) => {
+    rejectExpiration = reject;
+  });
+  void expiration.catch(() => undefined);
+  const timeout = setTimeout(() => {
+    expired = true;
+    controller.abort();
+    rejectExpiration(new AgentDeadlineError());
+  }, timeoutMs);
+
+  return {
+    signal: controller.signal,
+    expired: () => expired,
+    run<T>(operation: () => Promise<T>): Promise<T> {
+      if (expired) return Promise.reject(new AgentDeadlineError());
+      let work: Promise<T>;
+      try {
+        work = operation();
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      return Promise.race([work, expiration]);
+    },
+    cancel() {
+      clearTimeout(timeout);
+    },
+  };
+}
+
 async function persistResult(
   input: RunAgentInput,
   result: Omit<AgentResult, "persistenceStatus">,
+  deadline: AgentDeadline,
 ): Promise<AgentResult> {
+  if (deadline.expired()) return { ...result, persistenceStatus: "error" };
   try {
-    await input.repository.saveAgentRun({
-      assetId: input.assetId,
-      prompt: input.prompt,
-      answer: result.answer,
-      model: GEMMA_MODEL,
-      trace: result.trace,
-      durationMs: result.durationMs,
-    });
+    await deadline.run(() =>
+      input.repository.saveAgentRun({
+        assetId: input.assetId,
+        prompt: input.prompt,
+        answer: result.answer,
+        model: GEMMA_MODEL,
+        trace: result.trace,
+        durationMs: result.durationMs,
+      }),
+    );
     return { ...result, persistenceStatus: "saved" };
   } catch {
     return { ...result, persistenceStatus: "error" };
@@ -234,77 +321,83 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   const monotonicNow = input.monotonicNow ?? (() => performance.now());
   const startedAt = monotonicNow();
   const trace: AgentTraceEntry[] = [];
+  const deadline = createAgentDeadline(AGENT_TIMEOUT_MS);
+  let totalToolCalls = 0;
+  let refreshCalls = 0;
   const context: AgentToolContext = {
     activeAssetId: parsedRequest.assetId,
     repository: input.repository,
     snapshotService: input.snapshotService,
     snapshots: new Map(),
+    signal: deadline.signal,
   };
   const messages: OllamaMessage[] = [
     { role: "system", content: AGENT_SYSTEM_PROMPT },
     { role: "user", content: parsedRequest.prompt },
   ];
-  const controller = new AbortController();
-  let deadlineReached = false;
-  const deadline = setTimeout(() => {
-    deadlineReached = true;
-    controller.abort();
-  }, AGENT_TIMEOUT_MS);
-
   const finish = async (
     status: AgentRunStatus,
     answer: string,
     rounds: number,
   ) =>
-    persistResult(input, {
-      status,
-      answer,
-      model: GEMMA_MODEL,
-      trace,
-      rounds,
-      durationMs: Math.max(0, Math.round(monotonicNow() - startedAt)),
-    });
+    persistResult(
+      input,
+      {
+        status,
+        answer,
+        model: GEMMA_MODEL,
+        trace,
+        rounds,
+        durationMs: Math.max(0, Math.round(monotonicNow() - startedAt)),
+      },
+      deadline,
+    );
 
   try {
     for (let round = 1; round <= AGENT_MAX_ROUNDS; round += 1) {
       let payload: unknown;
       try {
-        const response = await fetchImplementation(chatUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: GEMMA_MODEL,
-            messages,
-            tools: AGENT_TOOL_DEFINITIONS,
-            stream: false,
-            think: false,
-            options: {
-              num_predict: 256,
-              temperature: 0.1,
-            },
+        const response = await deadline.run(() =>
+          fetchImplementation(chatUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: GEMMA_MODEL,
+              messages,
+              tools: AGENT_TOOL_DEFINITIONS,
+              stream: false,
+              think: false,
+              options: {
+                num_predict: 256,
+                temperature: 0.1,
+              },
+            }),
+            signal: deadline.signal,
           }),
-          signal: controller.signal,
-        });
-        payload = await boundedJson("Ollama", response, 2_000_000);
+        );
+        payload = await deadline.run(() =>
+          boundedJson("Ollama", response, 2_000_000),
+        );
       } catch (error) {
         if (
-          deadlineReached ||
+          deadline.expired() ||
+          error instanceof AgentDeadlineError ||
           (error instanceof DOMException && error.name === "AbortError") ||
           (error instanceof SourceAdapterError && error.code === "timeout")
         ) {
-          return finish("timeout", fallbackAnswers.timeout, round);
+          return await finish("timeout", fallbackAnswers.timeout, round);
         }
         if (error instanceof TypeError) {
-          return finish("offline", fallbackAnswers.offline, round);
+          return await finish("offline", fallbackAnswers.offline, round);
         }
-        return finish("error", fallbackAnswers.error, round);
+        return await finish("error", fallbackAnswers.error, round);
       }
 
       let assistantResponse: OllamaResponse;
       try {
         assistantResponse = parseOllamaResponse(payload);
       } catch {
-        return finish("error", fallbackAnswers.error, round);
+        return await finish("error", fallbackAnswers.error, round);
       }
       const assistantMessage: OllamaMessage = {
         role: "assistant",
@@ -318,16 +411,27 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
 
       if (calls.length === 0) {
         const answer = assistantResponse.message.content.trim();
-        if (!answer) return finish("error", fallbackAnswers.error, round);
+        if (!answer) return await finish("error", fallbackAnswers.error, round);
         if (!isAnswerGrounded(answer, trace)) {
-          return finish("grounding-error", fallbackAnswers.grounding, round);
+          return await finish("grounding-error", fallbackAnswers.grounding, round);
         }
-        return finish("ok", answer, round);
+        return await finish("ok", answer, round);
       }
+      if (
+        calls.length > AGENT_MAX_CALLS_PER_ROUND ||
+        totalToolCalls + calls.length > AGENT_MAX_TOOL_CALLS
+      ) {
+        return await finish("round-limit", fallbackAnswers.roundLimit, round);
+      }
+      totalToolCalls += calls.length;
 
       for (const call of calls) {
         const toolStartedAt = monotonicNow();
-        const toolName = call.function.name.slice(0, 160);
+        const toolName = call.function.name;
+        const visibleToolName =
+          safeTraceIdentity(toolName) ?? "[unknown-tool]";
+        const candidateEvidenceRef = String(trace.length + 1);
+        let evidenceRef: string | null = null;
         let validatedArguments: Record<string, unknown> | null = null;
         let status: AgentTraceStatus = "ok";
         let sourceStatus: Record<string, unknown> | null = null;
@@ -336,7 +440,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
         if (!isAgentToolName(toolName)) {
           status = "unknown-tool";
           toolResult = errorToolResult(
-            toolName,
+            visibleToolName,
             "unknown-tool",
             "The requested tool is not allowlisted",
           );
@@ -346,21 +450,45 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
               toolName,
               call.function.arguments,
             );
-            const execution = await executeAgentTool(
-              toolName,
-              validatedArguments,
-              context,
-            );
-            sourceStatus = sanitizeAgentValue(
-              execution.sourceStatus,
-            ) as Record<string, unknown> | null;
-            toolResult = boundToolResult(toolName, execution.data);
+            if (
+              toolName === "refresh_asset_data" &&
+              refreshCalls >= AGENT_MAX_REFRESH_CALLS
+            ) {
+              status = "tool-error";
+              toolResult = errorToolResult(
+                visibleToolName,
+                "refresh-limit",
+                "The evidence refresh limit was reached",
+              );
+            } else {
+              if (toolName === "refresh_asset_data") refreshCalls += 1;
+              const execution = await deadline.run(() =>
+                executeAgentTool(
+                  toolName,
+                  validatedArguments as Record<string, unknown>,
+                  context,
+                ),
+              );
+              sourceStatus = sanitizeAgentValue(
+                execution.sourceStatus,
+              ) as Record<string, unknown> | null;
+              evidenceRef = candidateEvidenceRef;
+              toolResult = boundToolResult(
+                visibleToolName,
+                execution.data,
+                6_000,
+                evidenceRef,
+              );
+            }
           } catch (error) {
+            if (deadline.expired() || error instanceof AgentDeadlineError) {
+              return await finish("timeout", fallbackAnswers.timeout, round);
+            }
             if (error instanceof AgentToolValidationError) {
               status = "validation-error";
               validatedArguments = null;
               toolResult = errorToolResult(
-                toolName,
+                visibleToolName,
                 "validation-error",
                 "Tool arguments failed validation",
               );
@@ -371,7 +499,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
                   ? error.code
                   : "tool-unavailable";
               toolResult = errorToolResult(
-                toolName,
+                visibleToolName,
                 code,
                 "The evidence tool could not complete",
               );
@@ -380,9 +508,10 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
         }
 
         trace.push({
-          callId: call.id ?? null,
+          evidenceRef,
+          callId: safeTraceIdentity(call.id),
           functionIndex: call.function.index ?? null,
-          toolName,
+          toolName: visibleToolName,
           validatedArguments:
             validatedArguments === null
               ? null
@@ -400,8 +529,12 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
       }
     }
 
-    return finish("round-limit", fallbackAnswers.roundLimit, AGENT_MAX_ROUNDS);
+    return await finish(
+      "round-limit",
+      fallbackAnswers.roundLimit,
+      AGENT_MAX_ROUNDS,
+    );
   } finally {
-    clearTimeout(deadline);
+    deadline.cancel();
   }
 }

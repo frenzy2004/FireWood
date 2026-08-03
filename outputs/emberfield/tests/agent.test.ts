@@ -11,6 +11,7 @@ import { POST as agentRoute } from "../app/api/agent/route";
 import {
   AGENT_TOOL_DEFINITIONS,
   boundToolResult,
+  sanitizeAgentValue,
   type AgentRepository,
   type SnapshotService,
 } from "../lib/agent/tools";
@@ -124,7 +125,7 @@ describe("Gemma native tool loop", () => {
   it("executes an allowlisted tool and preserves native call identity in history", async () => {
     const ollama = mockOllama([
       toolCall("inspect_asset", { assetId: asset.id }, "call-inspect", 4),
-      assistant("The orchard has elevated context because recent detections are nearby."),
+      assistant("The orchard has elevated context because recent detections are nearby. [evidence:1]"),
     ]);
 
     const result = await runAgent(runInput(ollama.fetchImplementation));
@@ -186,7 +187,7 @@ describe("Gemma native tool loop", () => {
 
     const result = await runAgent(runInput(ollama.fetchImplementation));
 
-    expect(result.status).toBe("ok");
+    expect(result.status).toBe("grounding-error");
     expect(result.trace[0]).toMatchObject({
       toolName: "delete_asset",
       status: "unknown-tool",
@@ -228,7 +229,7 @@ describe("Gemma native tool loop", () => {
         done_reason: "stop",
         message: { role: "assistant", content: "", tool_calls: calls },
       },
-      assistant("All requested evidence tools returned source-labelled results."),
+      assistant("All requested evidence tools returned source-labelled results. [evidence:1]"),
     ]);
     const { repository, snapshotService, snapshots } = harness();
 
@@ -251,7 +252,7 @@ describe("Gemma native tool loop", () => {
     expect(toolMessages).toHaveLength(9);
     expect(
       toolMessages.every(
-        ({ content }) => new TextEncoder().encode(content).byteLength <= 12_000,
+        ({ content }) => new TextEncoder().encode(content).byteLength <= 6_000,
       ),
     ).toBe(true);
   });
@@ -320,6 +321,51 @@ describe("Gemma native tool loop", () => {
     await expect(pending).resolves.toMatchObject({ status: "timeout" });
   });
 
+  it("applies the 45-second deadline while an evidence tool is stalled", async () => {
+    vi.useFakeTimers();
+    const ollama = mockOllama([
+      toolCall("inspect_asset", { assetId: asset.id }),
+    ]);
+    const { repository } = harness();
+    const stalledSnapshotService: SnapshotService = async () =>
+      new Promise<Snapshot>(() => undefined);
+    const settled = vi.fn();
+
+    void runAgent({
+      ...runInput(ollama.fetchImplementation),
+      repository,
+      snapshotService: stalledSnapshotService,
+    }).then(settled);
+    await vi.advanceTimersByTimeAsync(45_000);
+    await Promise.resolve();
+
+    expect(settled).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "timeout" }),
+    );
+  });
+
+  it("returns after the shared deadline when persistence is stalled", async () => {
+    vi.useFakeTimers();
+    const ollama = mockOllama([
+      toolCall("list_assets", {}),
+      assistant("The saved orchard is available. [evidence:1]"),
+    ]);
+    const { repository, snapshotService } = harness();
+    repository.saveAgentRun = vi.fn(
+      async () => new Promise<never>(() => undefined),
+    );
+    const pending = runAgent({
+      ...runInput(ollama.fetchImplementation),
+      repository,
+      snapshotService,
+    });
+    await vi.advanceTimersByTimeAsync(45_000);
+
+    await expect(pending).resolves.toEqual(
+      expect.objectContaining({ status: "ok", persistenceStatus: "error" }),
+    );
+  });
+
   it("stops after six tool-call rounds", async () => {
     const calls = Array.from({ length: 6 }, (_, index) =>
       toolCall("list_assets", {}, `call-${index}`, index),
@@ -333,10 +379,105 @@ describe("Gemma native tool loop", () => {
     expect(ollama.requests).toHaveLength(6);
   });
 
+  it("rejects a round containing more than nine tool calls before execution", async () => {
+    const excessiveCalls = Array.from({ length: 10 }, (_, index) => ({
+      id: `call-${index}`,
+      type: "function",
+      function: {
+        index,
+        name: "list_assets",
+        arguments: {},
+      },
+    }));
+    const ollama = mockOllama([
+      {
+        message: { role: "assistant", content: "", tool_calls: excessiveCalls },
+      },
+    ]);
+    const { repository, snapshotService } = harness();
+
+    const result = await runAgent({
+      ...runInput(ollama.fetchImplementation),
+      repository,
+      snapshotService,
+    });
+
+    expect(result.status).toBe("round-limit");
+    expect(result.trace).toEqual([]);
+    expect(repository.listAssets).not.toHaveBeenCalled();
+  });
+
+  it("stops before executing more than eighteen tool calls in one run", async () => {
+    const responseWithCalls = (start: number, count: number) => ({
+      message: {
+        role: "assistant",
+        content: "",
+        tool_calls: Array.from({ length: count }, (_, offset) => ({
+          id: `call-${start + offset}`,
+          type: "function",
+          function: {
+            index: offset,
+            name: "list_assets",
+            arguments: {},
+          },
+        })),
+      },
+    });
+    const ollama = mockOllama([
+      responseWithCalls(0, 9),
+      responseWithCalls(9, 9),
+      responseWithCalls(18, 1),
+    ]);
+    const { repository, snapshotService } = harness();
+
+    const result = await runAgent({
+      ...runInput(ollama.fetchImplementation),
+      repository,
+      snapshotService,
+    });
+
+    expect(result.status).toBe("round-limit");
+    expect(result.trace).toHaveLength(18);
+    expect(repository.listAssets).toHaveBeenCalledTimes(18);
+  });
+
+  it("allows only one refresh side effect per run", async () => {
+    const ollama = mockOllama([
+      {
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            toolCall("refresh_asset_data", { assetId: asset.id }, "refresh-1")
+              .message.tool_calls[0],
+            toolCall("refresh_asset_data", { assetId: asset.id }, "refresh-2")
+              .message.tool_calls[0],
+          ],
+        },
+      },
+      assistant("The asset evidence was refreshed. [evidence:1]"),
+    ]);
+    const { repository, snapshotService, snapshots } = harness();
+
+    const result = await runAgent({
+      ...runInput(ollama.fetchImplementation),
+      repository,
+      snapshotService,
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.trace.map(({ status }) => status)).toEqual([
+      "ok",
+      "tool-error",
+    ]);
+    expect(snapshotService).toHaveBeenCalledTimes(1);
+    expect(snapshots).toHaveLength(1);
+  });
+
   it("blocks a final numeric claim that was not present in visible tool evidence", async () => {
     const ollama = mockOllama([
       toolCall("inspect_asset", { assetId: asset.id }),
-      assistant("The verified context score is 999."),
+      assistant("The verified context score is 999. [evidence:1]"),
     ]);
 
     const result = await runAgent(runInput(ollama.fetchImplementation));
@@ -346,10 +487,51 @@ describe("Gemma native tool loop", () => {
     expect(result.answer).toContain("source-grounded");
   });
 
+  it("rejects an evidence briefing that skipped successful tools", async () => {
+    const ollama = mockOllama([
+      assistant("No recent detections were found near the orchard."),
+    ]);
+
+    const result = await runAgent(runInput(ollama.fetchImplementation));
+
+    expect(result.status).toBe("grounding-error");
+    expect(result.trace).toEqual([]);
+  });
+
+  it("rejects a nonnumeric condition claim without an evidence citation", async () => {
+    const ollama = mockOllama([
+      toolCall("inspect_asset", { assetId: asset.id }),
+      assistant("The source is live and confirms a wildfire."),
+    ]);
+
+    const result = await runAgent(runInput(ollama.fetchImplementation));
+
+    expect(result.status).toBe("grounding-error");
+  });
+
+  it("accepts a server-issued citation to successful tool evidence", async () => {
+    const ollama = mockOllama([
+      toolCall("list_assets", {}),
+      assistant("The saved orchard is available. [evidence:1]"),
+    ]);
+
+    const result = await runAgent(runInput(ollama.fetchImplementation));
+    const continuation = ollama.requests[1] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const toolMessage = continuation.messages.find(({ role }) => role === "tool");
+
+    expect(result.status).toBe("ok");
+    expect(result.trace[0]).toMatchObject({ evidenceRef: "1", status: "ok" });
+    expect(JSON.parse(toolMessage?.content ?? "{}")).toMatchObject({
+      evidenceRef: "1",
+    });
+  });
+
   it("redacts credential-bearing URLs from tool messages and visible traces", async () => {
     const ollama = mockOllama([
       toolCall("inspect_asset", { assetId: asset.id }),
-      assistant("Some source data is unavailable, so this briefing is limited."),
+      assistant("Some source data is unavailable, so this briefing is limited. [evidence:1]"),
     ]);
     const { repository, snapshotService } = harness((snapshot) => ({
       ...snapshot,
@@ -376,6 +558,40 @@ describe("Gemma native tool loop", () => {
 
     expect(JSON.stringify(result.trace)).not.toContain("super-secret");
     expect(JSON.stringify(ollama.requests[1])).not.toContain("super-secret");
+  });
+
+  it("sanitizes model-controlled trace identity while preserving private protocol identity", async () => {
+    const callSecret = "call-secret-value";
+    const nameSecret = "name-secret-value";
+    const rawCallId = `https://example.test/call?api_key=${callSecret}`;
+    const rawToolName = `https://[broken]?token=${nameSecret}`;
+    const ollama = mockOllama([
+      toolCall(rawToolName, {}, rawCallId),
+      assistant("That operation is not available."),
+    ]);
+    const { repository, snapshotService } = harness();
+
+    const result = await runAgent({
+      ...runInput(ollama.fetchImplementation),
+      repository,
+      snapshotService,
+    });
+    const persisted = vi.mocked(repository.saveAgentRun).mock.calls[0]?.[0];
+    const continuation = ollama.requests[1] as {
+      messages: Array<Record<string, unknown>>;
+    };
+
+    expect(JSON.stringify(result.trace)).not.toContain(callSecret);
+    expect(JSON.stringify(result.trace)).not.toContain(nameSecret);
+    expect(JSON.stringify(persisted?.trace)).not.toContain(callSecret);
+    expect(JSON.stringify(persisted?.trace)).not.toContain(nameSecret);
+    expect(JSON.stringify(continuation.messages)).toContain(callSecret);
+  });
+
+  it("redacts malformed URL-like values instead of returning them unchanged", () => {
+    const malformed = "https://[broken]?api_key=malformed-secret";
+
+    expect(sanitizeAgentValue(malformed)).toBe("[redacted-url]");
   });
 });
 
@@ -409,6 +625,18 @@ describe("agent contracts", () => {
     expect(new TextEncoder().encode(result.json).byteLength).toBeLessThanOrEqual(6_000);
   });
 
+  it("caps the final serialized envelope for escape-heavy multibyte evidence", () => {
+    const result = boundToolResult("inspect_asset", {
+      rows: Array.from({ length: 100 }, (_, index) => ({
+        index,
+        detail: `\"\\wildfire🔥${index}`.repeat(200),
+      })),
+    });
+
+    expect(new TextEncoder().encode(result.json).byteLength).toBeLessThanOrEqual(6_000);
+    expect(() => JSON.parse(result.json)).not.toThrow();
+  });
+
   it("rejects invalid agent route payloads before accessing Worker services", async () => {
     const response = await agentRoute(
       new Request("http://localhost/api/agent", {
@@ -424,7 +652,7 @@ describe("agent contracts", () => {
   it("briefs the virtual default demo from fixture evidence without a D1 asset", async () => {
     const ollama = mockOllama([
       toolCall("inspect_asset", { assetId: "demo-antelope-ranch" }),
-      assistant("The ranch briefing uses clearly labelled fixture detections and source states."),
+      assistant("The ranch briefing uses clearly labelled fixture detections and source states. [evidence:1]"),
     ]);
     vi.stubGlobal("fetch", ollama.fetchImplementation);
     workerEnvironment.DB = undefined;
