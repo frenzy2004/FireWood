@@ -1,5 +1,5 @@
-import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vitest/config";
+import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig({
   resolve: {
@@ -8,6 +8,6 @@ export default defineConfig({
     },
   },
   test: {
-    environment: "node",
+    include: ["tests/**/*.{test,spec}.{ts,tsx}"],
   },
 });

@@ -44,9 +44,16 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    // MapLibre owns a worker module that Vinext's dependency optimizer cannot
+    // safely pre-bundle. Leaving it to the browser build avoids a missing
+    // optimized worker module at runtime.
+    optimizeDeps: { exclude: ["maplibre-gl"] },
+    server: {
+      host: "127.0.0.1",
+      ...(isCodexSeatbeltSandbox
+        ? { watch: { useFsEvents: false, usePolling: true } }
+        : {}),
+    },
     plugins: [
       vinext(),
       sites(),

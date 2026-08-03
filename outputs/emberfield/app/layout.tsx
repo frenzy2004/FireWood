@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Starter Project",
-  description: "A clean starting point for building your site.",
+  title: "EmberField | Agriculture operations console",
+  description: "Local-first satellite evidence context for agriculture operations.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
