@@ -1,0 +1,642 @@
+import { z } from "zod";
+
+import { distanceKm } from "../domain/geometry";
+import type { StoredAlert, StoredAgentRun } from "../server/repository";
+import type {
+  SaveAgentRunInput,
+  SavedAsset,
+} from "../server/repository";
+import type { Snapshot, SnapshotGroup } from "../server/snapshot";
+
+export const AGENT_TOOL_NAMES = [
+  "list_assets",
+  "inspect_asset",
+  "refresh_asset_data",
+  "get_activity_groups",
+  "get_weather_context",
+  "get_air_quality",
+  "get_official_incidents",
+  "get_timeline",
+  "explain_assessment",
+] as const;
+
+export type AgentToolName = (typeof AGENT_TOOL_NAMES)[number];
+
+export interface AgentRepository {
+  listAssets(): Promise<SavedAsset[]>;
+  listAlerts(assetId: string): Promise<StoredAlert[]>;
+  saveSnapshot(snapshot: Snapshot): Promise<void>;
+  saveAgentRun(input: SaveAgentRunInput): Promise<StoredAgentRun>;
+}
+
+export type SnapshotService = (
+  asset: SavedAsset,
+  options: { refresh: boolean },
+) => Promise<Snapshot>;
+
+export interface AgentToolDefinition {
+  type: "function";
+  function: {
+    name: AgentToolName;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+const assetIdProperty = {
+  type: "string",
+  description: "Saved EmberField asset id. Omit to use the active asset.",
+  minLength: 1,
+  maxLength: 128,
+};
+
+const clusterIdProperty = {
+  type: "string",
+  description: "Activity group id returned by get_activity_groups.",
+  minLength: 1,
+  maxLength: 160,
+};
+
+const objectParameters = (
+  properties: Record<string, unknown>,
+  required: string[] = [],
+) => ({
+  type: "object",
+  properties,
+  required,
+  additionalProperties: false,
+});
+
+export const AGENT_TOOL_DEFINITIONS: AgentToolDefinition[] = [
+  {
+    type: "function",
+    function: {
+      name: "list_assets",
+      description: "List saved agricultural assets with coordinates and alert radii.",
+      parameters: objectParameters({}),
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "inspect_asset",
+      description: "Inspect one asset and its current deterministic evidence snapshot.",
+      parameters: objectParameters({ assetId: assetIdProperty }),
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "refresh_asset_data",
+      description: "Refresh and persist current evidence for one saved asset.",
+      parameters: objectParameters({ assetId: assetIdProperty }),
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_activity_groups",
+      description: "Get clustered satellite detections and deterministic assessments.",
+      parameters: objectParameters({ assetId: assetIdProperty }),
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_weather_context",
+      description: "Get source-timestamped NWS context for an activity group or valid coordinate.",
+      parameters: objectParameters({
+        assetId: assetIdProperty,
+        clusterId: clusterIdProperty,
+        latitude: { type: "number", minimum: -90, maximum: 90 },
+        longitude: { type: "number", minimum: -180, maximum: 180 },
+      }),
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_air_quality",
+      description: "Get AirNow AQI evidence and explicit missing-key or missing-data state.",
+      parameters: objectParameters({ assetId: assetIdProperty }),
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_official_incidents",
+      description: "Get optional WFIGS official incidents and perimeter associations.",
+      parameters: objectParameters({ assetId: assetIdProperty }),
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_timeline",
+      description: "Get recent satellite detections for a bounded evidence timeline.",
+      parameters: objectParameters({
+        assetId: assetIdProperty,
+        hours: { type: "integer", minimum: 1, maximum: 168, default: 24 },
+      }),
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "explain_assessment",
+      description: "Explain deterministic assessment contributions without altering the score.",
+      parameters: objectParameters({
+        assetId: assetIdProperty,
+        clusterId: clusterIdProperty,
+      }),
+    },
+  },
+];
+
+const idSchema = z.string().trim().min(1).max(128);
+const clusterIdSchema = z.string().trim().min(1).max(160);
+const assetArgumentsSchema = z.object({ assetId: idSchema.optional() }).strict();
+
+const toolSchemas = {
+  list_assets: z.object({}).strict(),
+  inspect_asset: assetArgumentsSchema,
+  refresh_asset_data: assetArgumentsSchema,
+  get_activity_groups: assetArgumentsSchema,
+  get_weather_context: z
+    .object({
+      assetId: idSchema.optional(),
+      clusterId: clusterIdSchema.optional(),
+      latitude: z.number().finite().min(-90).max(90).optional(),
+      longitude: z.number().finite().min(-180).max(180).optional(),
+    })
+    .strict()
+    .refine(
+      (value) =>
+        (value.latitude === undefined) === (value.longitude === undefined),
+      { message: "Latitude and longitude must be supplied together" },
+    ),
+  get_air_quality: assetArgumentsSchema,
+  get_official_incidents: assetArgumentsSchema,
+  get_timeline: z
+    .object({
+      assetId: idSchema.optional(),
+      hours: z.number().int().min(1).max(168).default(24),
+    })
+    .strict(),
+  explain_assessment: z
+    .object({
+      assetId: idSchema.optional(),
+      clusterId: clusterIdSchema.optional(),
+    })
+    .strict(),
+} satisfies Record<AgentToolName, z.ZodType>;
+
+export class AgentToolValidationError extends Error {
+  readonly code = "validation-error";
+}
+
+export class AgentToolExecutionError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "AgentToolExecutionError";
+  }
+}
+
+export interface AgentToolContext {
+  activeAssetId: string;
+  repository: AgentRepository;
+  snapshotService: SnapshotService;
+  snapshots: Map<string, Snapshot>;
+}
+
+export interface AgentToolExecution {
+  data: unknown;
+  sourceStatus: Record<string, unknown> | null;
+}
+
+const sourceEvidence = (snapshot: Snapshot) =>
+  Object.fromEntries(
+    Object.entries(snapshot.sources).map(([key, state]) => [
+      key,
+      {
+        source: state.source,
+        mode: state.mode,
+        status: state.status,
+        observedAt: state.observedAt,
+        fetchedAt: state.fetchedAt,
+        sourceUrl: state.sourceUrl,
+        coverage: state.coverage ?? null,
+      },
+    ]),
+  );
+
+const assetEvidence = (savedAsset: SavedAsset) => ({
+  id: savedAsset.id,
+  name: savedAsset.name,
+  category: savedAsset.category,
+  location: savedAsset.location,
+  radiusKm: savedAsset.radiusKm,
+  updatedAt: savedAsset.updatedAt,
+});
+
+const groupEvidence = (group: SnapshotGroup) => ({
+  clusterId: group.cluster.id,
+  centroid: group.cluster.centroid,
+  detectionCount: group.cluster.detectionCount,
+  firstAcquiredAt: group.cluster.firstAcquiredAt,
+  latestAcquiredAt: group.cluster.latestAcquiredAt,
+  satellites: group.cluster.satellites,
+  maxConfidence: group.cluster.maxConfidence,
+  maxFrpMw: group.cluster.maxFrpMw,
+  weather: group.weather,
+  assessment: {
+    score: group.assessment.score,
+    scoreRange: group.assessment.scoreRange,
+    band: group.assessment.band,
+    reasons: group.assessment.reasons,
+    missingInputs: group.assessment.missingInputs,
+    completeness: group.assessment.completeness,
+    dataQuality: group.assessment.dataQuality,
+    dataConfidence: group.assessment.dataConfidence,
+  },
+  officialMatch: group.officialMatch
+    ? {
+        method: group.officialMatch.method,
+        distanceKm: group.officialMatch.distanceKm,
+        incident: {
+          id: group.officialMatch.incident.id,
+          name: group.officialMatch.incident.name,
+          updatedAt: group.officialMatch.incident.updatedAt,
+        },
+      }
+    : null,
+});
+
+async function resolveAsset(
+  context: AgentToolContext,
+  requestedAssetId: unknown,
+): Promise<SavedAsset> {
+  const assetId =
+    typeof requestedAssetId === "string"
+      ? requestedAssetId
+      : context.activeAssetId;
+  const savedAsset = (await context.repository.listAssets()).find(
+    (candidate) => candidate.id === assetId,
+  );
+  if (!savedAsset) {
+    throw new AgentToolExecutionError(
+      "asset-not-found",
+      "The requested saved asset was not found",
+    );
+  }
+  return savedAsset;
+}
+
+async function snapshotFor(
+  context: AgentToolContext,
+  savedAsset: SavedAsset,
+  refresh = false,
+): Promise<Snapshot> {
+  if (!refresh) {
+    const existing = context.snapshots.get(savedAsset.id);
+    if (existing) return existing;
+  }
+  const snapshot = await context.snapshotService(savedAsset, { refresh });
+  context.snapshots.set(savedAsset.id, snapshot);
+  if (refresh) await context.repository.saveSnapshot(snapshot);
+  return snapshot;
+}
+
+function findGroup(snapshot: Snapshot, clusterId: unknown): SnapshotGroup {
+  const group =
+    typeof clusterId === "string"
+      ? snapshot.groups.find(({ cluster }) => cluster.id === clusterId)
+      : snapshot.groups[0];
+  if (!group) {
+    throw new AgentToolExecutionError(
+      "activity-group-not-found",
+      "No matching activity group is available",
+    );
+  }
+  return group;
+}
+
+type ParsedArguments = Record<string, unknown>;
+
+export function validateAgentToolArguments(
+  toolName: AgentToolName,
+  argumentsValue: unknown,
+): ParsedArguments {
+  const parsed = toolSchemas[toolName].safeParse(argumentsValue);
+  if (!parsed.success) {
+    throw new AgentToolValidationError("Tool arguments failed validation");
+  }
+  return parsed.data as ParsedArguments;
+}
+
+export function isAgentToolName(value: string): value is AgentToolName {
+  return (AGENT_TOOL_NAMES as readonly string[]).includes(value);
+}
+
+export async function executeAgentTool(
+  toolName: AgentToolName,
+  argumentsValue: ParsedArguments,
+  context: AgentToolContext,
+): Promise<AgentToolExecution> {
+  if (toolName === "list_assets") {
+    return {
+      data: {
+        assets: (await context.repository.listAssets()).map(assetEvidence),
+        missingData: [],
+      },
+      sourceStatus: null,
+    };
+  }
+
+  const savedAsset = await resolveAsset(context, argumentsValue.assetId);
+  if (toolName === "refresh_asset_data") {
+    const snapshot = await snapshotFor(context, savedAsset, true);
+    const sources = sourceEvidence(snapshot);
+    return {
+      data: {
+        refreshed: true,
+        asset: assetEvidence(savedAsset),
+        generatedAt: snapshot.generatedAt,
+        mode: snapshot.mode,
+        detectionCount: snapshot.detections.length,
+        activityGroupCount: snapshot.groups.length,
+        sources,
+      },
+      sourceStatus: sources,
+    };
+  }
+
+  const snapshot = await snapshotFor(context, savedAsset);
+  const sources = sourceEvidence(snapshot);
+
+  if (toolName === "inspect_asset") {
+    const alerts = await context.repository.listAlerts(savedAsset.id);
+    return {
+      data: {
+        asset: assetEvidence(savedAsset),
+        generatedAt: snapshot.generatedAt,
+        mode: snapshot.mode,
+        sources,
+        activityGroups: snapshot.groups.map(groupEvidence),
+        unacknowledgedAlertCount: alerts.length,
+        missingData: Object.entries(snapshot.sources)
+          .filter(([, state]) => state.status !== "ok")
+          .map(([name, state]) => `${name}:${state.status}`),
+      },
+      sourceStatus: sources,
+    };
+  }
+
+  if (toolName === "get_activity_groups") {
+    return {
+      data: {
+        assetId: savedAsset.id,
+        generatedAt: snapshot.generatedAt,
+        mode: snapshot.mode,
+        sources,
+        activityGroups: snapshot.groups.map(groupEvidence),
+        emptyMeaning:
+          snapshot.groups.length === 0
+            ? "No recent satellite detections were returned; this does not establish that no fire exists."
+            : null,
+      },
+      sourceStatus: sources,
+    };
+  }
+
+  if (toolName === "get_weather_context") {
+    let groups = snapshot.groups;
+    if (typeof argumentsValue.clusterId === "string") {
+      groups = [findGroup(snapshot, argumentsValue.clusterId)];
+    } else if (
+      typeof argumentsValue.latitude === "number" &&
+      typeof argumentsValue.longitude === "number"
+    ) {
+      const requested = {
+        lat: argumentsValue.latitude,
+        lon: argumentsValue.longitude,
+      };
+      groups = [...snapshot.groups]
+        .sort(
+          (left, right) =>
+            distanceKm(requested, left.cluster.centroid) -
+            distanceKm(requested, right.cluster.centroid),
+        )
+        .slice(0, 1);
+    }
+    return {
+      data: {
+        assetId: savedAsset.id,
+        generatedAt: snapshot.generatedAt,
+        mode: snapshot.mode,
+        source: snapshot.sources.nws,
+        contexts: groups.map((group) => ({
+          clusterId: group.cluster.id,
+          centroid: group.cluster.centroid,
+          weather: group.weather,
+          missingData: group.weather ? [] : ["weather"],
+        })),
+      },
+      sourceStatus: { nws: sources.nws },
+    };
+  }
+
+  if (toolName === "get_air_quality") {
+    return {
+      data: {
+        assetId: savedAsset.id,
+        generatedAt: snapshot.generatedAt,
+        mode: snapshot.mode,
+        source: snapshot.sources.airnow,
+        airQuality: snapshot.air,
+        missingData: snapshot.air ? [] : ["air-quality"],
+      },
+      sourceStatus: { airnow: sources.airnow },
+    };
+  }
+
+  if (toolName === "get_official_incidents") {
+    return {
+      data: {
+        assetId: savedAsset.id,
+        generatedAt: snapshot.generatedAt,
+        mode: snapshot.mode,
+        source: snapshot.sources.wfigs,
+        incidents: snapshot.incidents,
+        perimeters: snapshot.perimeters.map((perimeter) => ({
+          id: perimeter.id,
+          irwinId: perimeter.irwinId,
+          name: perimeter.name,
+          acres: perimeter.acres,
+          percentContained: perimeter.percentContained,
+          updatedAt: perimeter.updatedAt,
+        })),
+        missingData: snapshot.incidents.length > 0 ? [] : ["official-incidents"],
+      },
+      sourceStatus: { wfigs: sources.wfigs },
+    };
+  }
+
+  if (toolName === "get_timeline") {
+    const hours = argumentsValue.hours as number;
+    const cutoff = Date.parse(snapshot.generatedAt) - hours * 3_600_000;
+    const detections = snapshot.detections
+      .filter(({ acquiredAt }) => Date.parse(acquiredAt) >= cutoff)
+      .sort((left, right) => Date.parse(left.acquiredAt) - Date.parse(right.acquiredAt))
+      .map((detection) => ({
+        id: detection.id,
+        source: detection.source,
+        acquiredAt: detection.acquiredAt,
+        satellite: detection.satellite,
+        location: { lat: detection.lat, lon: detection.lon },
+        confidence: detection.confidence,
+        frpMw: detection.frpMw,
+      }));
+    return {
+      data: {
+        assetId: savedAsset.id,
+        generatedAt: snapshot.generatedAt,
+        mode: snapshot.mode,
+        hours,
+        source: snapshot.sources.firms,
+        detections,
+        emptyMeaning:
+          detections.length === 0
+            ? "No recent satellite detections were returned; this does not establish that no fire exists."
+            : null,
+      },
+      sourceStatus: { firms: sources.firms },
+    };
+  }
+
+  const group = findGroup(snapshot, argumentsValue.clusterId);
+  return {
+    data: {
+      assetId: savedAsset.id,
+      generatedAt: snapshot.generatedAt,
+      mode: snapshot.mode,
+      sources,
+      clusterId: group.cluster.id,
+      assessment: group.assessment,
+      invariant:
+        "This deterministic assessment cannot be changed by the language model.",
+    },
+    sourceStatus: sources,
+  };
+}
+
+const SECRET_KEY_PATTERN = /(?:api[_-]?key|map[_-]?key|authorization|password|secret|token)/i;
+
+function sanitizeUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password) {
+      return "[redacted-url]";
+    }
+    for (const key of [...url.searchParams.keys()]) {
+      if (SECRET_KEY_PATTERN.test(key)) url.searchParams.set(key, "[redacted]");
+    }
+    if (url.hostname.endsWith("firms.modaps.eosdis.nasa.gov")) {
+      url.pathname = url.pathname.replace(
+        /(\/api\/area\/csv\/)[^/]+/,
+        "$1[redacted]",
+      );
+    }
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
+export function sanitizeAgentValue(value: unknown, depth = 0): unknown {
+  if (depth > 8) return "[depth-limited]";
+  if (typeof value === "string") {
+    const sanitized = /^https?:\/\//i.test(value) ? sanitizeUrl(value) : value;
+    return sanitized.length > 2_000 ? `${sanitized.slice(0, 2_000)}…` : sanitized;
+  }
+  if (
+    value === null ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, 100)
+      .map((entry) => sanitizeAgentValue(entry, depth + 1));
+  }
+  if (typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .slice(0, 100)
+        .map(([key, entry]) => [
+          key,
+          SECRET_KEY_PATTERN.test(key)
+            ? "[redacted]"
+            : sanitizeAgentValue(entry, depth + 1),
+        ]),
+    );
+  }
+  return String(value);
+}
+
+const utf8Length = (value: string) => new TextEncoder().encode(value).byteLength;
+
+const truncateUtf8 = (value: string, maximumBytes: number) => {
+  if (utf8Length(value) <= maximumBytes) return value;
+  const ellipsis = "…";
+  const contentBudget = Math.max(0, maximumBytes - utf8Length(ellipsis));
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (utf8Length(value.slice(0, middle)) <= contentBudget) low = middle;
+    else high = middle - 1;
+  }
+  return `${value.slice(0, low)}${ellipsis}`;
+};
+
+export interface BoundedToolResult {
+  value: unknown;
+  json: string;
+  summary: unknown;
+}
+
+export function boundToolResult(
+  toolName: string,
+  result: unknown,
+  maximumBytes = 6_000,
+): BoundedToolResult {
+  const sanitized = sanitizeAgentValue({ ok: true, toolName, data: result });
+  const json = JSON.stringify(sanitized);
+  if (utf8Length(json) <= maximumBytes) {
+    return {
+      value: sanitized,
+      json,
+      summary:
+        utf8Length(json) <= 4_000
+          ? sanitized
+          : { truncated: true, preview: truncateUtf8(json, 3_800) },
+    };
+  }
+  const value = {
+    ok: true,
+    toolName,
+    truncated: true,
+    preview: truncateUtf8(json, Math.max(256, maximumBytes - 256)),
+  };
+  return {
+    value,
+    json: JSON.stringify(value),
+    summary: value,
+  };
+}
