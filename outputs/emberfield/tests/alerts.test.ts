@@ -38,9 +38,16 @@ describe("deriveAlerts", () => {
     );
   });
 
-  it("triggers for a new in-radius cluster", () => {
-    expect(deriveAlerts(null, current).map(({ type }) => type)).toEqual([
+  it("evaluates independent trigger families for a new in-radius cluster", () => {
+    const firstEvaluation = {
+      ...current,
+      matchedOfficialIncidentId: "incident-7",
+    };
+
+    expect(deriveAlerts(null, firstEvaluation).map(({ type }) => type)).toEqual([
       "new-cluster",
+      "new-satellite",
+      "official-incident",
     ]);
   });
 

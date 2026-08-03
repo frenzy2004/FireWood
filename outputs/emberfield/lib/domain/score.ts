@@ -75,6 +75,8 @@ const qualityValues: Record<SourceQuality, number> = {
 };
 
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
 
 const interpolate = (value: number, knots: Knot[]) => {
   if (value <= knots[0][0]) return knots[0][1];
@@ -91,7 +93,12 @@ const interpolate = (value: number, knots: Knot[]) => {
 const sourceQuality = (
   value: unknown,
   quality: SourceQuality | undefined,
-) => (value === null || value === undefined ? 0 : qualityValues[quality ?? "direct-fresh"]);
+) =>
+  value === null ||
+  value === undefined ||
+  (typeof value === "number" && !isFiniteNumber(value))
+    ? 0
+    : qualityValues[quality ?? "direct-fresh"];
 
 const contribution = (
   code: string,
@@ -99,15 +106,23 @@ const contribution = (
   weight: number,
   normalizedValue: number | null,
   quality: number,
-): AssessmentContribution => ({
-  code,
-  label,
-  weight,
-  normalizedValue,
-  quality,
-  weightedValue: weight * (normalizedValue ?? 0) * quality,
-  available: normalizedValue !== null && quality > 0,
-});
+): AssessmentContribution => {
+  const usableValue =
+    normalizedValue !== null && Number.isFinite(normalizedValue)
+      ? normalizedValue
+      : null;
+  const usableQuality = usableValue === null ? 0 : quality;
+
+  return {
+    code,
+    label,
+    weight,
+    normalizedValue: usableValue,
+    quality: usableQuality,
+    weightedValue: weight * (usableValue ?? 0) * usableQuality,
+    available: usableValue !== null && usableQuality > 0,
+  };
+};
 
 const bandFor = (score: number | null): AssessmentBand => {
   if (score === null) return "unassessed";
@@ -138,9 +153,9 @@ export function assessCluster(input: AssessmentInput): Assessment {
     input.bearingClusterToAsset,
     input.sourceQuality?.bearing,
   );
-  const hasWindDirection = input.weather?.windFromDeg != null;
-  const hasWindSpeed = input.weather?.windSpeedMps != null;
-  const hasHumidity = input.weather?.relativeHumidityPct != null;
+  const hasWindDirection = isFiniteNumber(input.weather?.windFromDeg);
+  const hasWindSpeed = isFiniteNumber(input.weather?.windSpeedMps);
+  const hasHumidity = isFiniteNumber(input.weather?.relativeHumidityPct);
   const downwindQuality =
     hasWindDirection && hasWindSpeed
       ? Math.min(weatherQuality, bearingQuality)
@@ -148,9 +163,9 @@ export function assessCluster(input: AssessmentInput): Assessment {
   const windQuality = hasWindSpeed ? weatherQuality : 0;
   const humidityQuality = hasHumidity ? weatherQuality : 0;
   const airValue =
-    input.air?.pm25UgM3 != null
+    isFiniteNumber(input.air?.pm25UgM3)
       ? clamp01(input.air.pm25UgM3 / 100)
-      : input.air?.aqi != null
+      : isFiniteNumber(input.air?.aqi)
         ? clamp01(input.air.aqi / 200)
         : null;
   const usableAirQuality = airValue === null ? 0 : airQuality;

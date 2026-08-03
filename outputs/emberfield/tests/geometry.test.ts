@@ -52,4 +52,19 @@ describe("boundingBox", () => {
     expect(box.north).toBe(90);
     expect(box.south).toBeGreaterThanOrEqual(-90);
   });
+
+  it("encloses the spherical circle at high latitudes", () => {
+    const box = boundingBox({ lat: 70, lon: 0 }, 1_000);
+
+    expect(box.east).toBeGreaterThan(27);
+    expect(box.west).toBeLessThan(-27);
+  });
+
+  it("covers every longitude when the radius reaches a pole", () => {
+    const box = boundingBox({ lat: 85, lon: 40 }, 600);
+
+    expect(box.west).toBe(-180);
+    expect(box.east).toBe(180);
+    expect(box.crossesAntimeridian).toBe(false);
+  });
 });

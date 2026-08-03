@@ -42,12 +42,14 @@ export function deriveAlerts(
   const types: AlertType[] = [];
   if (previous === null || !previous.inRadius) {
     types.push("new-cluster");
-  } else {
-    const previousSatellites = new Set(previous.satellites);
-    if (current.satellites.some((satellite) => !previousSatellites.has(satellite))) {
-      types.push("new-satellite");
-    }
+  }
 
+  const previousSatellites = new Set(previous?.satellites ?? []);
+  if (current.satellites.some((satellite) => !previousSatellites.has(satellite))) {
+    types.push("new-satellite");
+  }
+
+  if (previous !== null) {
     const previousActivity = Date.parse(previous.latestActivityAt);
     const currentActivity = Date.parse(current.latestActivityAt);
     if (
@@ -64,13 +66,13 @@ export function deriveAlerts(
     ) {
       types.push("score-increase");
     }
+  }
 
-    if (
-      current.matchedOfficialIncidentId !== null &&
-      current.matchedOfficialIncidentId !== previous.matchedOfficialIncidentId
-    ) {
-      types.push("official-incident");
-    }
+  if (
+    current.matchedOfficialIncidentId !== null &&
+    current.matchedOfficialIncidentId !== previous?.matchedOfficialIncidentId
+  ) {
+    types.push("official-incident");
   }
 
   const existingAlerts = [

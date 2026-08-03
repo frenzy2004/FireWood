@@ -55,17 +55,27 @@ export function boundingBox(
   const radius = Math.max(0, radiusKm);
   const latitude = clampLatitude(center.lat);
   const longitude = normalizeLongitude(center.lon);
-  const latitudeDelta = toDegrees(radius / EARTH_RADIUS_KM);
+  const angularDistance = Math.min(Math.PI, radius / EARTH_RADIUS_KM);
+  const latitudeDelta = toDegrees(angularDistance);
   const north = clampLatitude(latitude + latitudeDelta);
   const south = clampLatitude(latitude - latitudeDelta);
-  const cosineLatitude = Math.cos(toRadians(latitude));
-  const longitudeDelta =
-    Math.abs(cosineLatitude) < Number.EPSILON
-      ? 180
-      : Math.min(180, toDegrees(radius / EARTH_RADIUS_KM / cosineLatitude));
+  const coversAllLongitudes = north === 90 || south === -90;
+  const longitudeDelta = coversAllLongitudes
+    ? 180
+    : toDegrees(
+        Math.asin(
+          Math.max(
+            -1,
+            Math.min(
+              1,
+              Math.sin(angularDistance) /
+                Math.cos(toRadians(latitude)),
+            ),
+          ),
+        ),
+      );
   const rawWest = longitude - longitudeDelta;
   const rawEast = longitude + longitudeDelta;
-  const coversAllLongitudes = longitudeDelta >= 180;
   const crossesAntimeridian =
     !coversAllLongitudes && (rawWest < -180 || rawEast > 180);
 

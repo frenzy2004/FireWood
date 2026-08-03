@@ -104,4 +104,20 @@ describe("assessCluster", () => {
     expect(result.dataConfidence).toBe(40);
     expect(result.canAutomateAlerts).toBe(false);
   });
+
+  it("does not count a non-finite input toward data coverage", () => {
+    const result = assessCluster({
+      ...recentDownwindInput,
+      frpMw: Number.NaN,
+    });
+    const frp = result.contributions.find(({ code }) => code === "frp");
+
+    expect(frp).toMatchObject({
+      normalizedValue: null,
+      quality: 0,
+      available: false,
+    });
+    expect(result.missingInputs).toContain("frp");
+    expect(result.dataConfidence).toBe(90);
+  });
 });
