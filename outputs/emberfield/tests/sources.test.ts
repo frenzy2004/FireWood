@@ -23,7 +23,10 @@ import {
 import { fetchWfigs, parseWfigsGeoJson } from "../lib/sources/wfigs";
 
 const okFetch: typeof fetch = async () =>
-  new Response(JSON.stringify({ models: [] }), { status: 200 });
+  new Response(
+    JSON.stringify({ models: [{ name: "gemma4:12b" }] }),
+    { status: 200 },
+  );
 
 describe("runtime configuration and source health", () => {
   afterEach(() => {
@@ -50,6 +53,8 @@ describe("runtime configuration and source health", () => {
           .ollama.baseUrl,
       ).toBe("http://worker.example");
       expect(getRuntimeConfig({}).ollama.model).toBe("gemma4:12b");
+      expect(getRuntimeConfig({ OLLAMA_MODEL: "another-model" }).ollama.model)
+        .toBe("gemma4:12b");
     } finally {
       if (previousUrl === undefined) delete process.env.OLLAMA_BASE_URL;
       else process.env.OLLAMA_BASE_URL = previousUrl;
@@ -81,6 +86,20 @@ describe("runtime configuration and source health", () => {
     const health = await buildHealth({}, rejectedFetch);
 
     expect(health.integrations.ollama).toMatchObject({ status: "error" });
+  });
+
+  it("does not report Ollama ready when the required Gemma model is absent", async () => {
+    const noGemmaFetch: typeof fetch = async () =>
+      new Response(JSON.stringify({ models: [{ name: "another-model:latest" }] }), {
+        status: 200,
+      });
+
+    const health = await buildHealth({}, noGemmaFetch);
+
+    expect(health.integrations.ollama).toMatchObject({
+      configured: false,
+      status: "error",
+    });
   });
 
   it("bounds the Ollama probe to two seconds", async () => {

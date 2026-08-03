@@ -1,12 +1,13 @@
 import { z } from "zod";
 
 const OLLAMA_PROBE_TIMEOUT_MS = 2_000;
+const OLLAMA_PROBE_MAX_BYTES = 1_000_000;
+export const REQUIRED_OLLAMA_MODEL = "gemma4:12b";
 
 const runtimeConfigSchema = z.object({
   firmsMapKey: z.string().default(""),
   airnowApiKey: z.string().default(""),
   ollamaBaseUrl: z.url().default("http://127.0.0.1:11434"),
-  ollamaModel: z.string().min(1).default("gemma4:12b"),
 });
 
 type RuntimeEnvironment = Record<string, string | undefined>;
@@ -53,7 +54,6 @@ export function getRuntimeConfig(
     firmsMapKey: getValue(workerEnvironment, "FIRMS_MAP_KEY"),
     airnowApiKey: getValue(workerEnvironment, "AIRNOW_API_KEY"),
     ollamaBaseUrl: getValue(workerEnvironment, "OLLAMA_BASE_URL"),
-    ollamaModel: getValue(workerEnvironment, "OLLAMA_MODEL"),
   });
 
   return {
@@ -61,7 +61,7 @@ export function getRuntimeConfig(
     airnow: { apiKey: values.airnowApiKey },
     ollama: {
       baseUrl: values.ollamaBaseUrl.replace(/\/+$/, ""),
-      model: values.ollamaModel,
+      model: REQUIRED_OLLAMA_MODEL,
     },
   };
 }
@@ -75,6 +75,7 @@ function configuredSource(configured: boolean): IntegrationHealth {
 
 async function probeOllama(
   baseUrl: string,
+  requiredModel: string,
   fetchImplementation: typeof fetch,
 ): Promise<IntegrationHealth> {
   const controller = new AbortController();
@@ -85,9 +86,28 @@ async function probeOllama(
       signal: controller.signal,
     });
 
+    if (!response.ok) return { configured: true, status: "error" };
+    const declaredLength = Number(response.headers.get("content-length"));
+    if (
+      Number.isFinite(declaredLength) &&
+      declaredLength > OLLAMA_PROBE_MAX_BYTES
+    ) {
+      return { configured: true, status: "error" };
+    }
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > OLLAMA_PROBE_MAX_BYTES) {
+      return { configured: true, status: "error" };
+    }
+    const payload = JSON.parse(text) as { models?: unknown };
+    const models = Array.isArray(payload.models) ? payload.models : [];
+    const installed = models.some((value) => {
+      if (!value || typeof value !== "object") return false;
+      const model = value as { name?: unknown; model?: unknown };
+      return model.name === requiredModel || model.model === requiredModel;
+    });
     return {
-      configured: true,
-      status: response.ok ? "ready" : "error",
+      configured: installed,
+      status: installed ? "ready" : "error",
     };
   } catch (error) {
     const isOffline =
@@ -108,7 +128,7 @@ export async function buildHealth(
   const [firms, airnow, ollama] = await Promise.all([
     configuredSource(Boolean(config.firms.mapKey)),
     configuredSource(Boolean(config.airnow.apiKey)),
-    probeOllama(config.ollama.baseUrl, fetchImplementation),
+    probeOllama(config.ollama.baseUrl, config.ollama.model, fetchImplementation),
   ]);
 
   const integrations = { firms, airnow, ollama };
