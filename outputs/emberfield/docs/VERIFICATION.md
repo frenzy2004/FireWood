@@ -27,7 +27,7 @@ Final desktop browser QA at 1280 by 720 verified:
 - a saved live orchard with persisted history after reload and complete fetched/observed timestamps;
 - timeline restart synchronizing the map and inspector to zero visible detections at the 24-hour cutoff;
 - successful Census address normalization without saving the test address;
-- an actual grounded Gemma answer and expanded `inspect_asset` trace;
+- actual grounded Gemma answers with expanded `inspect_asset` and live Census `geocode_location` traces;
 - no error or warning entries in a fresh browser-tab log.
 
 Responsive tabs, focus handling, and narrow-layout behavior are covered by automated UI tests; a physical narrow-screen rehearsal is still advisable before judging.
