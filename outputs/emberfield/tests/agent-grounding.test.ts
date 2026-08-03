@@ -103,6 +103,24 @@ describe("claim-level agent grounding", () => {
     vi.useRealTimers();
   });
 
+  it("normalizes framing words before checking cited lexical evidence", () => {
+    const trace = [
+      evidence({
+        data: {
+          asset: { name: "Antelope Creek Ranch" },
+          mode: "fixture",
+        },
+      }),
+    ];
+
+    expect(
+      isAnswerGrounded(
+        "The active mode for this ranch is fixture [evidence:1].",
+        trace,
+      ),
+    ).toBe(true);
+  });
+
   it("does not let a negated containment phrase negate later spreading", () => {
     const trace = [
       evidence(

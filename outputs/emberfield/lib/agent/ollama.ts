@@ -286,6 +286,10 @@ function normalizedToken(value: string): string {
   return value;
 }
 
+const NORMALIZED_CLAIM_FRAMING_TERMS = new Set(
+  [...CLAIM_FRAMING_TERMS].map(normalizedToken),
+);
+
 function lexicalTokens(value: string): string[] {
   const expanded = value.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
   return [...expanded.matchAll(/[a-z][a-z0-9]*/g)].map(([token]) =>
@@ -680,7 +684,7 @@ function hasLexicalEvidence(
   const claimTerms = [
     ...new Set(
       lexicalTokens(sentence.replace(CITATION_PATTERN, "")).filter(
-        (token) => !CLAIM_FRAMING_TERMS.has(token),
+        (token) => !NORMALIZED_CLAIM_FRAMING_TERMS.has(token),
       ),
     ),
   ];
