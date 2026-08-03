@@ -69,6 +69,13 @@ export async function POST(request: Request): Promise<Response> {
     if (!parsed.success) {
       return Response.json({ error: "Invalid agent request" }, { status: 400 });
     }
+    const isVirtualDemo = parsed.data.assetId === DEMO_ASSET.id;
+    if (parsed.data.mode === "fixture" && !isVirtualDemo) {
+      return Response.json(
+        { error: "Fixture mode is available only for the virtual demo asset" },
+        { status: 409, headers: { "Cache-Control": "no-store" } },
+      );
+    }
     release = agentLimiter.tryAcquire();
     if (!release) {
       return Response.json(
@@ -81,7 +88,6 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const environment = env as unknown as Record<string, string | undefined>;
-    const isVirtualDemo = parsed.data.assetId === DEMO_ASSET.id;
     const mode = isVirtualDemo
       ? (parsed.data.mode ?? "fixture")
       : (parsed.data.mode ?? "live");

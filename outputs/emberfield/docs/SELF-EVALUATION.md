@@ -10,7 +10,7 @@ This is a self-assessment, not a predicted judge score. It separates demonstrate
 
 | Criterion | Weight | Self-score | Evidence in the prototype | Main deductions |
 | --- | ---: | ---: | --- | --- |
-| Gemma Integration | 30 | 23 | Actual local `gemma4:12b`, native Ollama tool calls, nine schema-validated evidence tools, bounded multi-round loop, visible trace, deterministic source context | Claim-level grounding remains a guardrail rather than formal proof; the 45 second budget can be tight after a cold or queued model run; complex prose can be safely rejected |
+| Gemma Integration | 30 | 23 | Actual local `gemma4:12b`, native Ollama tool calls, ten schema-validated evidence tools including live Census geocoding, bounded multi-round loop, visible trace, deterministic source context | Claim-level grounding remains a guardrail rather than formal proof; the 45 second budget can be tight after a cold or queued model run; complex prose can be safely rejected |
 | Innovation and Impact | 30 | 25 | Agriculture asset framing, five public evidence systems, explainable context rather than a spread prediction, local AI inference, explicit uncertainty | No grower field study, extension-service validation, or measured outcome data; live evidence coverage varies by place and time |
 | Functionality | 20 | 16 | Live and fixture modes, map, saved assets, Census lookup, clustering, scoring, persisted in-console alerts, bounded replay, source freshness, Gemma agent | Background polling and outbound alerts are not implemented; replay does not reconstruct historical weather, AQI, or scores; live evidence can validly be sparse |
 | Presentation and Writeup | 20 | 16 | Coherent operations console, fixture story, permanent safety copy, visible tool trace, judging narrative, three-minute script | No public demo, mobile app, submitted video, or external usability review is included in this repository |
@@ -22,7 +22,7 @@ This is a self-assessment, not a predicted judge score. It separates demonstrate
 
 - Ollama 0.32.5 reports a locally installed `gemma4:12b` model with an 11.9B parameter family, Q4_K_M quantization, and native tool capability.
 - A final real local agent run completed in two rounds: `gemma4:12b` selected native `inspect_asset`, then returned a cited fixture-mode answer. The route reported `persistenceStatus: not-persisted`; this was not a mocked model response.
-- The application exposes nine agriculture evidence tools for assets, activity groups, refresh, weather, air quality, official incidents, timeline evidence, and deterministic assessment explanations.
+- The application exposes ten agriculture evidence tools for assets, live Census geocoding, activity groups, refresh, weather, air quality, official incidents, timeline evidence, and deterministic assessment explanations.
 - Tool arguments are schema-validated. Results are bounded and sanitized before entering model history or the visible trace.
 - Gemma chooses tools and synthesizes the briefing. Deterministic code retains ownership of distances, clustering, score contributions, and alert rules.
 - Tests cover multi-round continuation, tool limits, timeout behavior, invalid calls, offline behavior, evidence citations, safety language, redaction, and trace rendering.

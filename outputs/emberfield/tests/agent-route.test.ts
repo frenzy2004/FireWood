@@ -46,6 +46,25 @@ describe("agent route local boundary", () => {
     expect(response.status).toBe(413);
   });
 
+  it("rejects fixture evidence for every saved non-demo asset", async () => {
+    const response = await agentRoute(
+      new Request("http://localhost/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: "Brief this saved orchard.",
+          assetId: "saved-orchard",
+          mode: "fixture",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "Fixture mode is available only for the virtual demo asset",
+    });
+  });
+
   it("allows the explicit virtual demo to request live evidence coherently", async () => {
     vi.stubGlobal(
       "fetch",

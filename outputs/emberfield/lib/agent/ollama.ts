@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { boundedJson, SourceAdapterError } from "../sources/shared";
+import { geocodeAddress, type GeocodePayload } from "../sources/census";
 import {
   AGENT_TOOL_DEFINITIONS,
   AgentToolExecutionError,
@@ -18,7 +19,7 @@ import {
 export const GEMMA_MODEL = "gemma4:12b";
 export const AGENT_TIMEOUT_MS = 45_000;
 export const AGENT_MAX_ROUNDS = 6;
-export const AGENT_MAX_CALLS_PER_ROUND = 9;
+export const AGENT_MAX_CALLS_PER_ROUND = 10;
 export const AGENT_MAX_TOOL_CALLS = 18;
 export const AGENT_MAX_REFRESH_CALLS = 1;
 
@@ -75,6 +76,10 @@ export interface RunAgentInput {
   repository: AgentRepository;
   snapshotService: SnapshotService;
   fetchImpl?: typeof fetch;
+  geocodeService?: (
+    address: string,
+    options: { signal: AbortSignal },
+  ) => Promise<GeocodePayload>;
   ollamaBaseUrl?: string;
   mode?: "live" | "fixture";
   now?: () => Date;
@@ -840,6 +845,10 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     repository: input.repository,
     snapshotService: input.snapshotService,
     snapshots: new Map(),
+    geocodeService:
+      input.geocodeService ??
+      ((address, options) =>
+        geocodeAddress(address, { signal: options.signal })),
     signal: deadline.signal,
   };
   const messages: OllamaMessage[] = [

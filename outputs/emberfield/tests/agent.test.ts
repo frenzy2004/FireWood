@@ -112,6 +112,20 @@ function runInput(
     repository,
     snapshotService,
     fetchImpl,
+    geocodeService: vi.fn(async (address: string) => ({
+      status: "ok" as const,
+      benchmark: { id: "4", name: "Public_AR_Current" },
+      match: {
+        matchedAddress: address.toUpperCase(),
+        location: { lat: 38.8977, lon: -77.0365 },
+        tigerLineId: "123",
+        side: "L",
+        addressComponents: {},
+      },
+      mode: "live" as const,
+      source: "US Census Geocoder" as const,
+      fetchedAt: fixedNow.toISOString(),
+    })),
     ollamaBaseUrl: "http://127.0.0.1:11434",
     now: () => fixedNow,
     ...overrides,
@@ -218,6 +232,7 @@ describe("Gemma native tool loop", () => {
       get_official_incidents: { assetId: asset.id },
       get_timeline: { assetId: asset.id, hours: 24 },
       explain_assessment: { assetId: asset.id },
+      geocode_location: { address: "1600 Pennsylvania Avenue NW, Washington, DC" },
     };
     const calls = AGENT_TOOL_DEFINITIONS.map((definition, index) => ({
       id: `call-${index}`,
@@ -255,12 +270,63 @@ describe("Gemma native tool loop", () => {
       messages: Array<{ role: string; content: string }>;
     };
     const toolMessages = continuation.messages.filter(({ role }) => role === "tool");
-    expect(toolMessages).toHaveLength(9);
+    expect(toolMessages).toHaveLength(10);
     expect(
       toolMessages.every(
         ({ content }) => new TextEncoder().encode(content).byteLength <= 6_000,
       ),
     ).toBe(true);
+  });
+
+  it("lets Gemma call the live Census geocoder as a native evidence tool", async () => {
+    const geocodeService = vi.fn(async (address: string) => ({
+      status: "ok" as const,
+      benchmark: { id: "4", name: "Public_AR_Current" },
+      match: {
+        matchedAddress: address.toUpperCase(),
+        location: { lat: 38.8977, lon: -77.0365 },
+        tigerLineId: "123",
+        side: "L",
+        addressComponents: {},
+      },
+      mode: "live" as const,
+      source: "US Census Geocoder" as const,
+      fetchedAt: fixedNow.toISOString(),
+    }));
+    const ollama = mockOllama([
+      toolCall("geocode_location", {
+        address: "1600 Pennsylvania Avenue NW, Washington, DC",
+      }),
+      assistant("The Census match is in Washington, DC. [evidence:1]"),
+    ]);
+
+    const result = await runAgent(
+      runInput(ollama.fetchImplementation, { geocodeService }),
+    );
+
+    expect(result.status).toBe("ok");
+    expect(geocodeService).toHaveBeenCalledWith(
+      "1600 Pennsylvania Avenue NW, Washington, DC",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(result.trace[0]).toMatchObject({
+      toolName: "geocode_location",
+      status: "ok",
+      sourceStatus: {
+        census: expect.objectContaining({
+          source: "US Census Geocoder",
+          mode: "live",
+          status: "ok",
+        }),
+      },
+      resultSummary: expect.objectContaining({
+        data: expect.objectContaining({
+          match: expect.objectContaining({
+            location: { lat: 38.8977, lon: -77.0365 },
+          }),
+        }),
+      }),
+    });
   });
 
   it("rejects invalid coordinate arguments before a tool can reach the snapshot service", async () => {
@@ -387,8 +453,8 @@ describe("Gemma native tool loop", () => {
     expect(ollama.requests).toHaveLength(6);
   });
 
-  it("rejects a round containing more than nine tool calls before execution", async () => {
-    const excessiveCalls = Array.from({ length: 10 }, (_, index) => ({
+  it("rejects a round containing more than ten tool calls before execution", async () => {
+    const excessiveCalls = Array.from({ length: 11 }, (_, index) => ({
       id: `call-${index}`,
       type: "function",
       function: {
@@ -813,7 +879,7 @@ describe("agent contracts", () => {
     vi.unstubAllGlobals();
   });
 
-  it("publishes exactly the nine allowlisted agricultural evidence tools", () => {
+  it("publishes exactly the ten allowlisted agricultural evidence tools", () => {
     expect(AGENT_TOOL_DEFINITIONS.map((tool) => tool.function.name)).toEqual([
       "list_assets",
       "inspect_asset",
@@ -824,6 +890,7 @@ describe("agent contracts", () => {
       "get_official_incidents",
       "get_timeline",
       "explain_assessment",
+      "geocode_location",
     ]);
   });
 

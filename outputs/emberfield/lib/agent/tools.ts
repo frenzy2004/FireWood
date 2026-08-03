@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { distanceKm } from "../domain/geometry";
+import type { GeocodePayload } from "../sources/census";
 import type { StoredAlert, StoredAgentRun } from "../server/repository";
 import type {
   SaveAgentRunInput,
@@ -18,6 +19,7 @@ export const AGENT_TOOL_NAMES = [
   "get_official_incidents",
   "get_timeline",
   "explain_assessment",
+  "geocode_location",
 ] as const;
 
 export type AgentToolName = (typeof AGENT_TOOL_NAMES)[number];
@@ -153,6 +155,25 @@ export const AGENT_TOOL_DEFINITIONS: AgentToolDefinition[] = [
       }),
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "geocode_location",
+      description:
+        "Geocode one US street address with the live US Census Geocoder. This does not save an asset.",
+      parameters: objectParameters(
+        {
+          address: {
+            type: "string",
+            description: "US street address to match with the Census Geocoder.",
+            minLength: 1,
+            maxLength: 100,
+          },
+        },
+        ["address"],
+      ),
+    },
+  },
 ];
 
 const idSchema = z.string().trim().min(1).max(128);
@@ -191,6 +212,9 @@ const toolSchemas = {
       clusterId: clusterIdSchema.optional(),
     })
     .strict(),
+  geocode_location: z
+    .object({ address: z.string().trim().min(1).max(100) })
+    .strict(),
 } satisfies Record<AgentToolName, z.ZodType>;
 
 export class AgentToolValidationError extends Error {
@@ -212,6 +236,10 @@ export interface AgentToolContext {
   repository: AgentRepository;
   snapshotService: SnapshotService;
   snapshots: Map<string, Snapshot>;
+  geocodeService: (
+    address: string,
+    options: { signal: AbortSignal },
+  ) => Promise<GeocodePayload>;
   signal: AbortSignal;
 }
 
@@ -375,6 +403,28 @@ export async function executeAgentTool(
         missingData: [],
       },
       sourceStatus: null,
+    };
+  }
+
+  if (toolName === "geocode_location") {
+    const result = await context.geocodeService(
+      argumentsValue.address as string,
+      { signal: context.signal },
+    );
+    ensureActive(context);
+    const censusStatus = {
+      source: result.source,
+      mode: result.mode,
+      status: result.status,
+      observedAt: null,
+      fetchedAt: result.fetchedAt,
+    };
+    return {
+      data: {
+        ...result,
+        missingData: result.status === "ok" ? [] : ["address-match"],
+      },
+      sourceStatus: { census: censusStatus },
     };
   }
 
