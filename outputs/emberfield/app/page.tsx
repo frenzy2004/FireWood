@@ -60,10 +60,17 @@ export function Dashboard({ initialSnapshot }: { initialSnapshot?: DashboardSnap
   const inspector = <ActivityInspector snapshot={replaySnapshot} selectedGroupId={dashboard.selectedGroupId} alerts={dashboard.alerts} replayCutoff={replay.cutoff} />;
   const timeline = <TimelineDock snapshot={snapshot} replay={replay} onSelect={dashboard.setSelectedGroupId} onReplayChange={updateReplay} />;
   const agent = <AgentPanel snapshot={snapshot} selectedAssetId={dashboard.selectedAsset.id} ollamaStatus={dashboard.health?.integrations.ollama.status} />;
+  const errorHeading = dashboard.error?.status === 429
+    ? "Refresh limited."
+    : dashboard.error?.status === 503
+      ? "Local snapshot unavailable."
+      : dashboard.error?.attemptedMode === "live"
+        ? "Live evidence needs attention."
+        : "Fixture evidence needs attention.";
 
   return <main className="console-shell">
-    <TopBar mode={dashboard.mode} snapshotMode={snapshot?.mode} health={dashboard.health} healthError={dashboard.healthError} lastRefreshAt={dashboard.lastRefreshAt} loading={dashboard.loading} onModeChange={dashboard.changeMode} onRefresh={() => void dashboard.refresh()} />
-    {dashboard.error ? <div className="console-error" role="alert"><strong>{dashboard.error.attemptedMode === "live" ? "Live evidence needs attention." : "Fixture evidence needs attention."}</strong> {dashboard.error.message} {dashboard.error.retainedMode ? `Showing the previous ${dashboard.error.retainedMode} snapshot${dashboard.error.retainedAssetName ? ` for ${dashboard.error.retainedAssetName}` : ""}.` : "No prior snapshot is being shown."}</div> : null}
+    <TopBar mode={dashboard.mode} snapshotMode={snapshot?.mode} snapshot={snapshot} fixtureAvailable={dashboard.fixtureAvailable} health={dashboard.health} healthError={dashboard.healthError} lastRefreshAt={dashboard.lastRefreshAt} loading={dashboard.loading} onModeChange={dashboard.changeMode} onRefresh={() => void dashboard.refresh()} />
+    {dashboard.error ? <div className="console-error" role="alert"><strong>{errorHeading}</strong> {dashboard.error.message} {dashboard.error.retryAfterSeconds ? `Retry after ${dashboard.error.retryAfterSeconds} second${dashboard.error.retryAfterSeconds === 1 ? "" : "s"}. ` : ""}{dashboard.error.retainedMode ? `Showing the previous ${dashboard.error.retainedMode} snapshot${dashboard.error.retainedAssetName ? ` for ${dashboard.error.retainedAssetName}` : ""}.` : "No prior snapshot is being shown."}</div> : null}
     <div className="workspace">
       {assetRail}
       <div className="map-column"><MapCanvas snapshot={replaySnapshot} selectedGroupId={dashboard.selectedGroupId} onSelect={dashboard.setSelectedGroupId} />{activeTab === "Timeline" ? null : timeline}</div>

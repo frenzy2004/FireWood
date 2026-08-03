@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { deriveAlerts } from "@/lib/domain/alerts";
-import type { AlertEvaluation, AlertType } from "@/lib/domain/types";
+import type { Alert, AlertEvaluation, AlertType } from "@/lib/domain/types";
 
 export type DataMode = "fixture" | "live";
 
@@ -22,6 +22,7 @@ export type SourceState = {
 
 export type DashboardDetection = {
   id?: string;
+  fingerprint?: string;
   source?: string;
   lat: number;
   lon: number;
@@ -29,6 +30,13 @@ export type DashboardDetection = {
   satellite: string;
   confidence: string;
   frpMw: number | null;
+};
+
+export type PersistedDashboardAlert = Alert & {
+  acquiredAt: string;
+  distanceKm: number;
+  confidence: string;
+  source: string;
 };
 
 export type DashboardSnapshot = {
@@ -96,6 +104,20 @@ export type DashboardSnapshot = {
     observedAt?: string;
   } | null;
   sources: Record<string, SourceState>;
+  snapshotId?: string | null;
+  persisted?: boolean;
+  alerts?: Alert[];
+  history24h?: {
+    since: string;
+    runs: Array<{
+      id: string;
+      generatedAt: string;
+      detectionCount: number;
+      groupCount: number;
+    }>;
+    detections: DashboardDetection[];
+    alerts: PersistedDashboardAlert[];
+  };
 };
 
 export type SavedAsset = {
@@ -136,6 +158,8 @@ export type AssetSummary = {
 export type DashboardErrorNotice = {
   attemptedMode: DataMode;
   message: string;
+  status: number | null;
+  retryAfterSeconds: number | null;
   retainedMode: DataMode | null;
   retainedAssetName: string | null;
 };
@@ -176,6 +200,7 @@ function evaluationFor(
   return {
     assetId: snapshot.asset.id,
     clusterId: group.cluster.id,
+    dedupeScope: snapshot.mode,
     evaluatedAt: snapshot.generatedAt,
     inRadius: distanceKm <= snapshot.asset.radiusKm,
     satellites: group.cluster.satellites,
@@ -233,16 +258,110 @@ const defaultAsset: SavedAsset = {
   radiusKm: 45,
 };
 
-function snapshotUrl(asset: SavedAsset, mode: DataMode) {
-  const query = new URLSearchParams({
-    lat: String(asset.location.lat),
-    lon: String(asset.location.lon),
-    radiusKm: String(asset.radiusKm),
-    name: asset.name,
-    mode,
-  });
-  return `/api/snapshot?${query}`;
+const DEMO_ASSET_ID = defaultAsset.id;
+
+class SnapshotRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfterSeconds: number | null,
+  ) {
+    super(message);
+  }
 }
+
+const detectionIdentity = (detection: DashboardDetection) => detection.fingerprint
+  ?? detection.id
+  ?? [
+    detection.source,
+    detection.satellite,
+    detection.acquiredAt,
+    detection.lat,
+    detection.lon,
+  ].join("|");
+
+export function hydrateSnapshotHistory(snapshot: DashboardSnapshot): DashboardSnapshot {
+  const evidence = new Map<string, DashboardDetection>();
+  for (const detection of [
+    ...snapshot.detections,
+    ...(snapshot.history24h?.detections ?? []),
+  ]) {
+    const identity = detectionIdentity(detection);
+    if (!evidence.has(identity)) evidence.set(identity, detection);
+  }
+  return {
+    ...snapshot,
+    detections: [...evidence.values()].sort(
+      (left, right) => Date.parse(left.acquiredAt) - Date.parse(right.acquiredAt),
+    ),
+  };
+}
+
+function persistedConsoleAlerts(snapshot: DashboardSnapshot): ConsoleAlert[] {
+  const domainAlerts = new Map<string, Alert | PersistedDashboardAlert>();
+  for (const alert of [
+    ...(snapshot.history24h?.alerts ?? []),
+    ...(snapshot.alerts ?? []),
+  ]) {
+    const prior = domainAlerts.get(alert.dedupeKey);
+    if (!prior || alert.updatedAt > prior.updatedAt) domainAlerts.set(alert.dedupeKey, alert);
+  }
+
+  return [...domainAlerts.values()].flatMap((alert) => {
+    if (
+      "acquiredAt" in alert
+      && typeof alert.acquiredAt === "string"
+      && "distanceKm" in alert
+      && typeof alert.distanceKm === "number"
+      && Number.isFinite(alert.distanceKm)
+      && "confidence" in alert
+      && typeof alert.confidence === "string"
+      && "source" in alert
+      && typeof alert.source === "string"
+    ) {
+      return [{
+        dedupeKey: alert.dedupeKey,
+        type: alert.type,
+        title: alertTitle[alert.type],
+        acquiredAt: alert.acquiredAt,
+        distanceKm: alert.distanceKm,
+        confidence: alert.confidence,
+        source: alert.source,
+        reason: alert.message,
+      }];
+    }
+    const group = snapshot.groups.find((candidate) => candidate.cluster.id === alert.clusterId);
+    if (!group) return [];
+    const evaluatedAt = Date.parse(alert.updatedAt);
+    const detection = [...group.cluster.detections]
+      .filter((candidate) => Date.parse(candidate.acquiredAt) <= evaluatedAt)
+      .sort((left, right) => Date.parse(right.acquiredAt) - Date.parse(left.acquiredAt))[0];
+    if (!detection) return [];
+    const distanceKm = distanceBetweenKm(snapshot.asset.location, group.cluster.centroid);
+    return [{
+      dedupeKey: alert.dedupeKey,
+      type: alert.type,
+      title: alertTitle[alert.type],
+      acquiredAt: detection.acquiredAt,
+      distanceKm,
+      confidence: detection.confidence,
+      source: `${detection.source ?? snapshot.sources.firms?.source ?? "NASA FIRMS"}: ${detection.satellite}`,
+      reason: alert.message,
+    }];
+  });
+}
+
+function initialConsoleAlerts(snapshot: DashboardSnapshot | undefined): ConsoleAlert[] {
+  if (!snapshot) return [];
+  const combined = [
+    ...deriveConsoleAlerts(undefined, snapshot),
+    ...persistedConsoleAlerts(snapshot),
+  ];
+  return [...new Map(combined.map((alert) => [alert.dedupeKey, alert])).values()];
+}
+
+const requestedModeForAsset = (asset: SavedAsset, mode: DataMode): DataMode =>
+  asset.id === DEMO_ASSET_ID ? mode : "live";
 
 const snapshotKey = (assetId: string, mode: DataMode) => `${assetId}:${mode}`;
 
@@ -280,42 +399,33 @@ function isHealthPayload(value: unknown): value is HealthPayload {
   });
 }
 
-function normalizeSnapshotIdentity(payload: DashboardSnapshot, asset: SavedAsset): DashboardSnapshot {
-  return {
-    ...payload,
-    asset: {
-      ...payload.asset,
-      id: asset.id,
-      name: asset.name,
-      location: asset.location,
-      radiusKm: asset.radiusKm,
-    },
-  };
-}
-
 export function useDashboard(initialSnapshot?: DashboardSnapshot) {
+  const hydratedInitialSnapshot = useMemo(
+    () => initialSnapshot ? hydrateSnapshotHistory(initialSnapshot) : undefined,
+    [initialSnapshot],
+  );
   const requestedInitialSnapshot = useRef(false);
   const snapshotRequest = useRef<{ sequence: number; controller: AbortController } | null>(null);
   const healthRequest = useRef<AbortController | null>(null);
-  const snapshotRef = useRef<DashboardSnapshot | undefined>(initialSnapshot);
-  const initialKey = initialSnapshot ? snapshotKey(initialSnapshot.asset.id, initialSnapshot.mode) : null;
-  const initialAlerts = initialSnapshot ? deriveConsoleAlerts(undefined, initialSnapshot) : [];
-  const previousSnapshots = useRef(new Map<string, DashboardSnapshot>(initialSnapshot && initialKey ? [[initialKey, initialSnapshot]] : []));
+  const snapshotRef = useRef<DashboardSnapshot | undefined>(hydratedInitialSnapshot);
+  const initialKey = hydratedInitialSnapshot ? snapshotKey(hydratedInitialSnapshot.asset.id, hydratedInitialSnapshot.mode) : null;
+  const initialAlerts = initialConsoleAlerts(hydratedInitialSnapshot);
+  const previousSnapshots = useRef(new Map<string, DashboardSnapshot>(hydratedInitialSnapshot && initialKey ? [[initialKey, hydratedInitialSnapshot]] : []));
   const alertHistories = useRef(new Map<string, Map<string, ConsoleAlert>>(initialKey ? [[initialKey, new Map(initialAlerts.map((alert) => [alert.dedupeKey, alert]))]] : []));
 
-  const [mode, setMode] = useState<DataMode>(initialSnapshot?.mode ?? "fixture");
-  const [snapshot, setSnapshot] = useState<DashboardSnapshot | undefined>(initialSnapshot);
-  const [assets, setAssets] = useState<SavedAsset[]>([initialSnapshot?.asset ?? defaultAsset]);
-  const [selectedAssetId, setSelectedAssetId] = useState(initialSnapshot?.asset.id ?? defaultAsset.id);
-  const [selectedGroupId, setSelectedGroupId] = useState(initialSnapshot?.groups[0]?.cluster.id ?? "");
-  const [loading, setLoading] = useState(!initialSnapshot);
+  const [mode, setMode] = useState<DataMode>(hydratedInitialSnapshot?.mode ?? "fixture");
+  const [snapshot, setSnapshot] = useState<DashboardSnapshot | undefined>(hydratedInitialSnapshot);
+  const [assets, setAssets] = useState<SavedAsset[]>([hydratedInitialSnapshot?.asset ?? defaultAsset]);
+  const [selectedAssetId, setSelectedAssetId] = useState(hydratedInitialSnapshot?.asset.id ?? defaultAsset.id);
+  const [selectedGroupId, setSelectedGroupId] = useState(hydratedInitialSnapshot?.groups[0]?.cluster.id ?? "");
+  const [loading, setLoading] = useState(!hydratedInitialSnapshot);
   const [error, setError] = useState<DashboardErrorNotice | null>(null);
   const [assetStorageError, setAssetStorageError] = useState<string | null>(null);
   const [health, setHealth] = useState<HealthPayload | undefined>();
   const [healthError, setHealthError] = useState<string | null>(null);
-  const [lastRefreshAt, setLastRefreshAt] = useState(initialSnapshot?.generatedAt ?? null);
-  const [summaries, setSummaries] = useState<Record<string, AssetSummary>>(() => initialSnapshot
-    ? { [initialSnapshot.asset.id]: summarizeSnapshot(initialSnapshot) }
+  const [lastRefreshAt, setLastRefreshAt] = useState(hydratedInitialSnapshot?.generatedAt ?? null);
+  const [summaries, setSummaries] = useState<Record<string, AssetSummary>>(() => hydratedInitialSnapshot
+    ? { [hydratedInitialSnapshot.asset.id]: summarizeSnapshot(hydratedInitialSnapshot) }
     : {});
   const [alerts, setAlerts] = useState<ConsoleAlert[]>(initialAlerts);
 
@@ -355,34 +465,50 @@ export function useDashboard(initialSnapshot?: DashboardSnapshot) {
     snapshotRequest.current = { sequence, controller };
     setLoading(true);
     setError(null);
+    const requestedMode = requestedModeForAsset(asset, nextMode);
     try {
-      const response = await fetch(snapshotUrl(asset, nextMode), { signal: controller.signal });
+      const response = await fetch("/api/snapshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assetId: asset.id, mode: requestedMode, refresh: true }),
+        signal: controller.signal,
+      });
       const payload: unknown = await response.json().catch(() => null);
       if (!response.ok || !payload || typeof payload !== "object" || !("asset" in payload)) {
         const message = payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string"
           ? payload.error
           : "Snapshot data is unavailable right now.";
-        throw new Error(message);
+        const retryAfter = Number(response.headers.get("Retry-After"));
+        throw new SnapshotRequestError(
+          message,
+          response.status,
+          Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : null,
+        );
       }
       if (snapshotRequest.current.sequence !== sequence) return;
-      const normalized = normalizeSnapshotIdentity(payload as DashboardSnapshot, asset);
-      const key = snapshotKey(asset.id, normalized.mode);
+      const responseSnapshot = payload as DashboardSnapshot;
+      if (responseSnapshot.asset.id !== asset.id || responseSnapshot.mode !== requestedMode) {
+        throw new SnapshotRequestError("Snapshot identity did not match the requested saved asset and evidence mode.", 502, null);
+      }
+      const normalized = hydrateSnapshotHistory(responseSnapshot);
+      const key = snapshotKey(normalized.asset.id, normalized.mode);
       const prior = previousSnapshots.current.get(key);
       const events = deriveConsoleAlerts(prior, normalized);
       const history = alertHistories.current.get(key) ?? new Map<string, ConsoleAlert>();
       for (const event of events) history.set(event.dedupeKey, event);
+      for (const event of persistedConsoleAlerts(normalized)) history.set(event.dedupeKey, event);
       alertHistories.current.set(key, history);
       previousSnapshots.current.set(key, normalized);
       snapshotRef.current = normalized;
       setSnapshot(normalized);
       setMode(normalized.mode);
-      setSelectedAssetId(asset.id);
+      setSelectedAssetId(normalized.asset.id);
       setAlerts([...history.values()].sort((left, right) => Date.parse(right.acquiredAt) - Date.parse(left.acquiredAt)));
       setSelectedGroupId(normalized.groups[0]?.cluster.id ?? "");
       setLastRefreshAt(normalized.generatedAt);
       setSummaries((current) => ({
         ...current,
-        [asset.id]: summarizeSnapshot(
+        [normalized.asset.id]: summarizeSnapshot(
           normalized,
           prior ? summarizeSnapshot(prior) : undefined,
         ),
@@ -392,8 +518,10 @@ export function useDashboard(initialSnapshot?: DashboardSnapshot) {
       if (snapshotRequest.current?.sequence !== sequence) return;
       const retained = snapshotRef.current;
       setError({
-        attemptedMode: nextMode,
+        attemptedMode: requestedMode,
         message: cause instanceof Error ? cause.message : "Snapshot data is unavailable right now.",
+        status: cause instanceof SnapshotRequestError ? cause.status : null,
+        retryAfterSeconds: cause instanceof SnapshotRequestError ? cause.retryAfterSeconds : null,
         retainedMode: retained?.mode ?? null,
         retainedAssetName: retained?.asset.name ?? null,
       });
@@ -449,14 +577,16 @@ export function useDashboard(initialSnapshot?: DashboardSnapshot) {
       snapshotRef.current = undefined;
       setSnapshot(undefined);
     }
-    const key = snapshotKey(asset.id, mode);
+    const requestedMode = requestedModeForAsset(asset, mode);
+    const key = snapshotKey(asset.id, requestedMode);
     setAlerts([...(alertHistories.current.get(key)?.values() ?? [])]);
-    void loadSnapshot(asset, mode);
+    void loadSnapshot(asset, requestedMode);
   };
 
   const changeMode = (nextMode: DataMode) => {
-    if (nextMode === mode && snapshotRef.current?.mode === nextMode) return;
-    void Promise.all([loadSnapshot(selectedAsset, nextMode), loadHealth()]);
+    const requestedMode = requestedModeForAsset(selectedAsset, nextMode);
+    if (requestedMode === mode && snapshotRef.current?.mode === requestedMode) return;
+    void Promise.all([loadSnapshot(selectedAsset, requestedMode), loadHealth()]);
   };
 
   return {
@@ -478,6 +608,7 @@ export function useDashboard(initialSnapshot?: DashboardSnapshot) {
     summaries,
     refresh,
     changeMode,
+    fixtureAvailable: selectedAsset.id === DEMO_ASSET_ID,
   };
 }
 

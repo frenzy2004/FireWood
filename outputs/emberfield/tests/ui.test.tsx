@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgentPanel } from "../app/components/AgentPanel";
@@ -85,6 +85,19 @@ const health = {
   },
 };
 
+const virtualSnapshotResponse = () => ({
+  ...snapshot,
+  snapshotId: null,
+  persisted: false,
+  alerts: [],
+  history24h: {
+    since: "2026-08-02T12:00:00.000Z",
+    runs: [],
+    detections: [],
+    alerts: [],
+  },
+});
+
 function backgroundResponse(input: RequestInfo | URL) {
   if (String(input) === "/api/assets") return new Response(JSON.stringify({ assets: [] }), { status: 200 });
   if (String(input) === "/api/health") return new Response(JSON.stringify(health), { status: 200 });
@@ -117,8 +130,8 @@ describe("EmberField console", () => {
   });
 
   it("keeps the fixture mode active and discloses retained fixture evidence after live failure", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).includes("mode=live")) {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/snapshot" && JSON.parse(String(init?.body)).mode === "live") {
         return new Response(JSON.stringify({ error: "Live snapshot unavailable" }), { status: 502 });
       }
       return backgroundResponse(input);
@@ -231,6 +244,131 @@ describe("EmberField console", () => {
     expect(screen.getAllByText("Offline").length).toBeGreaterThan(0);
   });
 
+  it("posts only the virtual asset identity and keeps its non-persistence visible", async () => {
+    const snapshotCalls: Array<[RequestInfo | URL, RequestInit | undefined]> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/snapshot") {
+        snapshotCalls.push([input, init]);
+        return new Response(JSON.stringify(virtualSnapshotResponse()), { status: 200 });
+      }
+      return backgroundResponse(input);
+    }));
+    render(<Dashboard initialSnapshot={snapshot} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh evidence" }));
+
+    await waitFor(() => expect(snapshotCalls).toHaveLength(1));
+    const [url, init] = snapshotCalls[0];
+    expect(String(url)).toBe("/api/snapshot");
+    expect(init?.method).toBe("POST");
+    expect(new Headers(init?.headers).get("Content-Type")).toBe("application/json");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      assetId: "demo-antelope-ranch",
+      mode: "fixture",
+      refresh: true,
+    });
+    expect(String(init?.body)).not.toMatch(/latitude|longitude|radius|name|lat|lon/i);
+    expect(await screen.findByText(/Virtual demo · not persisted/i)).toBeTruthy();
+    expect(screen.queryByText(/Saved locally/i)).toBeNull();
+  });
+
+  it("hydrates bounded saved history and server alerts without duplicate evidence", async () => {
+    const secondAsset = { id: "field-2", name: "Sierra Field", category: "field", location: { lat: 36.7, lon: -119.8 }, radiusKm: 25 };
+    const historicDetection = { id: "detection-history", lat: 36.71, lon: -119.81, acquiredAt: "2026-08-03T08:00:00.000Z", satellite: "Suomi NPP", confidence: "nominal", frpMw: 10.2 };
+    const currentDetection = { ...detections[1], lat: 36.705, lon: -119.805 };
+    const persistedAlert = {
+      id: "alert-history",
+      type: "new-cluster" as const,
+      assetId: secondAsset.id,
+      clusterId: "historic-track",
+      dedupeKey: "field-2:live:historic-track:new-cluster",
+      createdAt: "2026-08-03T08:05:00.000Z",
+      updatedAt: "2026-08-03T08:05:00.000Z",
+      message: "Persisted activity first appeared near this field.",
+      acquiredAt: historicDetection.acquiredAt,
+      distanceKm: 1.6,
+      confidence: historicDetection.confidence,
+      source: "NASA FIRMS: Suomi NPP",
+    };
+    const savedResponse = {
+      ...snapshot,
+      mode: "live" as const,
+      generatedAt: "2026-08-03T12:15:00.000Z",
+      asset: secondAsset,
+      detections: [currentDetection],
+      groups: snapshot.groups.map((group) => ({
+        ...group,
+        cluster: {
+          ...group.cluster,
+          id: "current-track",
+          centroid: { lat: currentDetection.lat, lon: currentDetection.lon },
+          detections: [currentDetection],
+          memberFingerprints: [currentDetection.id],
+          detectionCount: 1,
+          firstAcquiredAt: currentDetection.acquiredAt,
+          latestAcquiredAt: currentDetection.acquiredAt,
+          satellites: [currentDetection.satellite],
+        },
+      })),
+      snapshotId: "run-2",
+      persisted: true,
+      alerts: [],
+      history24h: {
+        since: "2026-08-02T12:15:00.000Z",
+        runs: [
+          { id: "run-2", generatedAt: "2026-08-03T12:15:00.000Z", detectionCount: 1, groupCount: 1 },
+          { id: "run-1", generatedAt: "2026-08-03T08:05:00.000Z", detectionCount: 1, groupCount: 1 },
+        ],
+        detections: [currentDetection, historicDetection, historicDetection],
+        alerts: [persistedAlert, persistedAlert],
+      },
+      sources: Object.fromEntries(Object.entries(snapshot.sources).map(([key, source]) => [key, { ...source, mode: "live" }])),
+    };
+    const snapshotBodies: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/assets") return new Response(JSON.stringify({ assets: [secondAsset] }), { status: 200 });
+      if (String(input) === "/api/health") return new Response(JSON.stringify(health), { status: 200 });
+      if (String(input) === "/api/snapshot") {
+        snapshotBodies.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify(savedResponse), { status: 200 });
+      }
+      return backgroundResponse(input);
+    }));
+    render(<Dashboard initialSnapshot={snapshot} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /sierra field/i }));
+
+    await waitFor(() => expect(snapshotBodies).toEqual([{ assetId: "field-2", mode: "live", refresh: true }]));
+    expect(await screen.findByText(/Saved locally · 2\/48 runs · 2\/2,000 detections · 1\/200 alerts/i)).toBeTruthy();
+    expect(screen.getByText("2 raw detections")).toBeTruthy();
+    for (const feed of screen.getAllByLabelText("In-console alerts")) {
+      expect(within(feed).getAllByText("Persisted activity first appeared near this field.")).toHaveLength(1);
+      expect(feed.textContent).toMatch(/2026-08-03T08:00:00Z.*1\.6 km.*nominal.*NASA FIRMS: Suomi NPP/i);
+    }
+    expect(screen.getAllByLabelText(/Suomi NPP detection at 2026-08-03T08:00:00Z/i)).toHaveLength(1);
+  });
+
+  it.each([
+    [429, "Another local snapshot refresh is already running", "Refresh limited", { "Retry-After": "1" }],
+    [503, "Local snapshot persistence is unavailable", "Local snapshot unavailable", {}],
+  ])("retains displayed evidence after a %s snapshot failure", async (status, message, heading, headers) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/snapshot") {
+        return new Response(JSON.stringify({ error: message }), { status, headers });
+      }
+      return backgroundResponse(input);
+    }));
+    render(<Dashboard initialSnapshot={snapshot} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh evidence" }));
+
+    expect(await screen.findByText(new RegExp(heading, "i"))).toBeTruthy();
+    expect(screen.getByText(new RegExp(message, "i"))).toBeTruthy();
+    expect(screen.getByText(/Showing the previous fixture snapshot for Antelope Creek Ranch/i)).toBeTruthy();
+    if (status === 429) expect(screen.getByText(/Retry after 1 second/i)).toBeTruthy();
+    expect(screen.getByText("2 raw detections")).toBeTruthy();
+  });
+
   it("replaces stale ready badges when a later health probe fails", async () => {
     let healthCalls = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
@@ -309,16 +447,21 @@ describe("EmberField console", () => {
         agentBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         return new Response(JSON.stringify({ status: "ok", answer: "Saved asset identity received.", model: "gemma4:12b", trace: [] }), { status: 200 });
       }
-      return new Response(JSON.stringify({ ...snapshot, asset: { ...snapshot.asset, id: "request-asset", name: secondAsset.name, location: secondAsset.location, radiusKm: secondAsset.radiusKm } }), { status: 200 });
+      return new Response(JSON.stringify({
+        ...snapshot,
+        mode: "live",
+        asset: secondAsset,
+        sources: Object.fromEntries(Object.entries(snapshot.sources).map(([key, source]) => [key, { ...source, mode: "live" }])),
+      }), { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<Dashboard initialSnapshot={snapshot} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /sierra field/i }));
-    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).includes("name=Sierra+Field"))).toBe(true));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => String(input) === "/api/snapshot" && JSON.parse(String(init?.body)).assetId === "field-2")).toBe(true));
     expect((await screen.findAllByText("Sierra Field")).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: /brief me on this ranch/i }));
-    await waitFor(() => expect(agentBodies).toContainEqual(expect.objectContaining({ assetId: "field-2", mode: "fixture" })));
+    await waitFor(() => expect(agentBodies).toContainEqual(expect.objectContaining({ assetId: "field-2", mode: "live" })));
   });
 
   it("does not compare fixture and live scores as an asset trend", async () => {
