@@ -106,6 +106,8 @@ export interface SnapshotDependencies {
   fetchAir?: typeof fetchAirQuality;
   fetchWfigs?: typeof fetchWfigs;
   cache?: TtlCache;
+  signal?: AbortSignal;
+  refresh?: boolean;
 }
 
 const sourceError = (
@@ -300,6 +302,7 @@ export async function buildSnapshot(
   input: BuildSnapshotInput,
   dependencies: SnapshotDependencies = {},
 ): Promise<Snapshot> {
+  dependencies.signal?.throwIfAborted();
   const now = dependencies.now?.() ?? new Date();
   if ((input.mode ?? "live") === "fixture") return fixtureSnapshot(input, now);
 
@@ -309,14 +312,21 @@ export async function buildSnapshot(
   const fetchAir = dependencies.fetchAir ?? fetchAirQuality;
   const fetchOfficial = dependencies.fetchWfigs ?? fetchWfigs;
   const cache = dependencies.cache ?? sourceCache;
+  const adapterDependencies = {
+    cache,
+    now: dependencies.now,
+    signal: dependencies.signal,
+    refresh: dependencies.refresh,
+  };
   const [firmsResult, airResult, wfigsResult] = await Promise.allSettled([
-    fetchFirms({ mapKey: config.firms.mapKey, bbox }, { cache, now: dependencies.now }),
+    fetchFirms({ mapKey: config.firms.mapKey, bbox }, adapterDependencies),
     fetchAir(
       { apiKey: config.airnow.apiKey, location: input.asset.location },
-      { cache, now: dependencies.now },
+      adapterDependencies,
     ),
-    fetchOfficial({ bbox }, { cache, now: dependencies.now }),
+    fetchOfficial({ bbox }, adapterDependencies),
   ]);
+  dependencies.signal?.throwIfAborted();
 
   const firms = firmsResult.status === "fulfilled" ? firmsResult.value : null;
   const airPayload = airResult.status === "fulfilled" ? airResult.value : null;
@@ -336,9 +346,10 @@ export async function buildSnapshot(
       fetchWeather({
         location: cluster.centroid,
         at: new Date(cluster.latestAcquiredAt),
-      }, { cache, now: dependencies.now }),
+      }, adapterDependencies),
     ),
   );
+  dependencies.signal?.throwIfAborted();
   const groups = clusters.map((cluster, index) => {
     const result = weatherResults[index];
     const weather = result?.status === "fulfilled" ? result.value.weather : null;

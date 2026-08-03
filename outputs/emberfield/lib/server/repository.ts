@@ -63,7 +63,7 @@ export interface StoredAgentRun extends SaveAgentRunInput {
 
 export interface D1PreparedStatementLike {
   bind(...values: unknown[]): D1PreparedStatementLike;
-  run<T = Record<string, unknown>>(): Promise<unknown>;
+  run(): Promise<unknown>;
   all<T = Record<string, unknown>>(): Promise<{ results: T[] }>;
   first<T = Record<string, unknown>>(): Promise<T | null>;
 }
@@ -115,6 +115,10 @@ const utcIso = (value: string | Date): string => {
   const date = value instanceof Date ? value : new Date(value);
   if (!Number.isFinite(date.getTime())) throw new Error("Invalid UTC timestamp");
   return date.toISOString();
+};
+
+const throwIfAborted = (signal: AbortSignal | undefined): void => {
+  signal?.throwIfAborted();
 };
 
 const asSavedAsset = (row: AssetRow): SavedAsset => ({
@@ -211,13 +215,15 @@ export class AssetRepository {
     this.createId = dependencies.createId ?? (() => crypto.randomUUID());
   }
 
-  async listAssets(): Promise<SavedAsset[]> {
+  async listAssets(signal?: AbortSignal): Promise<SavedAsset[]> {
+    throwIfAborted(signal);
     const { results } = await this.database
       .prepare(`SELECT id, name, category, latitude, longitude, radius_km, notes,
         created_at, updated_at
         FROM assets
         ORDER BY updated_at DESC, id ASC`)
       .all<AssetRow>();
+    throwIfAborted(signal);
     return results.map(asSavedAsset);
   }
 
@@ -301,7 +307,12 @@ export class AssetRepository {
     return updated;
   }
 
-  async saveSnapshot(snapshot: Snapshot, snapshotAlerts: Alert[] = []): Promise<void> {
+  async saveSnapshot(
+    snapshot: Snapshot,
+    snapshotAlerts: Alert[] = [],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    throwIfAborted(signal);
     const fetchedAt = utcIso(snapshot.generatedAt);
     const statements: D1PreparedStatementLike[] = [];
 
@@ -439,10 +450,18 @@ export class AssetRepository {
       );
     }
 
+    throwIfAborted(signal);
+    // D1 exposes no cancellation for an issued atomic batch. The final check
+    // guarantees an aborted caller cannot begin a new write; an in-flight batch
+    // may still finish atomically after its caller is aborted.
     await this.database.batch(statements);
   }
 
-  async listAlerts(assetId: string): Promise<StoredAlert[]> {
+  async listAlerts(
+    assetId: string,
+    signal?: AbortSignal,
+  ): Promise<StoredAlert[]> {
+    throwIfAborted(signal);
     const { results } = await this.database
       .prepare(`SELECT id, type, asset_id, cluster_id, dedupe_key, created_at,
         updated_at, message, acknowledged
@@ -451,17 +470,22 @@ export class AssetRepository {
         ORDER BY created_at DESC, id ASC`)
       .bind(assetId)
       .all<AlertRow>();
+    throwIfAborted(signal);
     return results.map(asStoredAlert);
   }
 
-  async saveAgentRun(input: SaveAgentRunInput): Promise<StoredAgentRun> {
+  async saveAgentRun(
+    input: SaveAgentRunInput,
+    signal?: AbortSignal,
+  ): Promise<StoredAgentRun> {
+    throwIfAborted(signal);
     const parsed = agentRunSchema.parse(input);
     const run: StoredAgentRun = {
       ...parsed,
       id: this.createId(),
       createdAt: utcIso(this.now()),
     };
-    await this.database
+    const statement = this.database
       .prepare(`INSERT INTO agent_runs (
         id, asset_id, prompt, answer, model, trace_json, duration_ms, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -474,8 +498,11 @@ export class AssetRepository {
         JSON.stringify(run.trace ?? null),
         run.durationMs,
         run.createdAt,
-      )
-      .run();
+      );
+    throwIfAborted(signal);
+    // Like D1 batches, an issued statement is atomic and cannot be cancelled.
+    // No statement is issued after the deadline signal has already aborted.
+    await statement.run();
     return run;
   }
 }

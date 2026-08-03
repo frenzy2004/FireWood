@@ -98,6 +98,35 @@ describe("runtime configuration and source health", () => {
 
     expect(health.integrations.ollama).toMatchObject({ status: "offline" });
   });
+
+  it("propagates an external abort through the source fetch lifecycle", async () => {
+    const controller = new AbortController();
+    const observedAbort = vi.fn();
+    const pendingFetch: typeof fetch = async (_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => {
+            observedAbort();
+            reject(new DOMException("Aborted", "AbortError"));
+          },
+          { once: true },
+        );
+      });
+
+    const pending = fetchWithTimeout(
+      "FIRMS",
+      "https://example.test/source",
+      {},
+      pendingFetch,
+      12_000,
+      controller.signal,
+    );
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ code: "aborted" });
+    expect(observedAbort).toHaveBeenCalledOnce();
+  });
 });
 
 const firmsCsv = `latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_ti5,frp,daynight

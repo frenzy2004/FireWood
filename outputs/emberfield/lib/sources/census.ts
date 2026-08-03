@@ -86,6 +86,7 @@ export async function geocodeAddress(
   address: string,
   dependencies: AdapterDependencies = {},
 ): Promise<GeocodePayload> {
+  dependencies.signal?.throwIfAborted();
   const normalizedAddress = address.trim();
   if (normalizedAddress.length === 0 || normalizedAddress.length > 100) {
     throw new SourceAdapterError("Census", "invalid-address", "Address must contain 1 to 100 characters");
@@ -100,6 +101,7 @@ export async function geocodeAddress(
     { headers: { Accept: "application/json" } },
     dependencies.fetchImplementation ?? fetch,
     12_000,
+    dependencies.signal,
   );
   const parsed = parseCensusResponse(await boundedJson("Census", response, 1_000_000));
   return {

@@ -152,9 +152,139 @@ describe("source-aware cache", () => {
       .resolves.toMatchObject({ value: "recovered", cache: "miss" });
     expect(loader).toHaveBeenCalledTimes(2);
   });
+
+  it("bypasses a valid entry for an explicit refresh and replaces it", async () => {
+    const cache = new MemoryTtlCache(() => 1_000);
+    const loader = vi
+      .fn<() => Promise<string>>()
+      .mockResolvedValueOnce("cached")
+      .mockResolvedValueOnce("refreshed");
+
+    await cache.getOrLoad("firms:refresh", CACHE_TTLS.firms, loader);
+    const refreshed = await cache.getOrLoad(
+      "firms:refresh",
+      CACHE_TTLS.firms,
+      loader,
+      { refresh: true },
+    );
+    const afterRefresh = await cache.getOrLoad(
+      "firms:refresh",
+      CACHE_TTLS.firms,
+      loader,
+    );
+
+    expect(refreshed).toMatchObject({ value: "refreshed", cache: "miss" });
+    expect(afterRefresh).toMatchObject({ value: "refreshed", cache: "hit" });
+    expect(loader).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let older in-flight work overwrite a completed refresh", async () => {
+    const cache = new MemoryTtlCache(() => 1_000);
+    let resolveOlder!: (value: string) => void;
+    const older = cache.getOrLoad(
+      "wfigs:refresh-race",
+      CACHE_TTLS.wfigs,
+      () =>
+        new Promise<string>((resolve) => {
+          resolveOlder = resolve;
+        }),
+    );
+    await Promise.resolve();
+
+    const refreshed = await cache.getOrLoad(
+      "wfigs:refresh-race",
+      CACHE_TTLS.wfigs,
+      async () => "refreshed",
+      { refresh: true },
+    );
+    resolveOlder("older");
+    await older;
+    const cached = await cache.getOrLoad(
+      "wfigs:refresh-race",
+      CACHE_TTLS.wfigs,
+      async () => "unexpected",
+    );
+
+    expect(refreshed.value).toBe("refreshed");
+    expect(cached).toMatchObject({ value: "refreshed", cache: "hit" });
+  });
+
+  it("does not populate the cache after its caller aborts", async () => {
+    vi.useFakeTimers();
+    const cache = new MemoryTtlCache(() => 1_000);
+    const controller = new AbortController();
+    const loader = vi.fn(
+      async () =>
+        new Promise<string>((resolve) => {
+          setTimeout(() => resolve("too-late"), 50_000);
+        }),
+    );
+
+    const pending = cache.getOrLoad("airnow:abort", CACHE_TTLS.airnow, loader, {
+      signal: controller.signal,
+    });
+    await Promise.resolve();
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await vi.advanceTimersByTimeAsync(50_000);
+
+    await cache.getOrLoad("airnow:abort", CACHE_TTLS.airnow, async () => "fresh");
+    expect(loader).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
 });
 
 describe("snapshot composition", () => {
+  it("propagates refresh and cancellation options to every source adapter", async () => {
+    const controller = new AbortController();
+    const seen: Array<{ refresh?: boolean; signal?: AbortSignal }> = [];
+    const record = (dependencies: { refresh?: boolean; signal?: AbortSignal }) => {
+      seen.push(dependencies);
+    };
+
+    await buildSnapshot(
+      { asset: DEMO_ASSET, bbox: DEMO_BBOX, mode: "live" },
+      {
+        now: () => now,
+        refresh: true,
+        signal: controller.signal,
+        config: {
+          firms: { mapKey: "configured" },
+          airnow: { apiKey: "configured" },
+          ollama: { baseUrl: "http://127.0.0.1:11434", model: "gemma4:12b" },
+        },
+        fetchFirms: async (_input, dependencies) => {
+          record(dependencies ?? {});
+          return firmsPayload;
+        },
+        fetchWeather: async (_input, dependencies) => {
+          record(dependencies ?? {});
+          return weatherPayload;
+        },
+        fetchAir: async (_input, dependencies) => {
+          record(dependencies ?? {});
+          return {
+            mode: "live",
+            status: "ok",
+            source: "AirNow",
+            fetchedAt: now.toISOString(),
+            observedAt: null,
+            observations: [],
+            air: null,
+          };
+        },
+        fetchWfigs: async (_input, dependencies) => {
+          record(dependencies ?? {});
+          return wfigsPayload;
+        },
+      },
+    );
+
+    expect(seen).toHaveLength(4);
+    expect(seen.every(({ refresh, signal }) => refresh && signal === controller.signal))
+      .toBe(true);
+  });
+
   it("preserves partial success, assesses clusters, and associates containing perimeters", async () => {
     const snapshot = await buildSnapshot(
       { asset: DEMO_ASSET, bbox: DEMO_BBOX, mode: "live" },

@@ -27,7 +27,6 @@ function virtualDemoRepository(): AgentRepository {
   return {
     listAssets: async () => [demoSavedAsset],
     listAlerts: async () => [],
-    saveSnapshot: async () => undefined,
     saveAgentRun: async () => {
       throw new Error("Virtual demo agent runs are not persisted");
     },
@@ -56,14 +55,18 @@ export async function POST(request: Request): Promise<Response> {
       : new AssetRepository(
           getD1Database() as unknown as D1DatabaseLike,
         );
-    const snapshotService: SnapshotService = async (asset) =>
+    const snapshotService: SnapshotService = async (asset, options) =>
       buildSnapshot(
         {
           asset,
           ...(isVirtualDemo ? { bbox: DEMO_BBOX } : {}),
           mode,
         },
-        { environment },
+        {
+          environment,
+          signal: options.signal,
+          refresh: options.refresh,
+        },
       );
     const config = getRuntimeConfig(environment);
     const result = await runAgent({

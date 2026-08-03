@@ -181,6 +181,7 @@ async function fetchLayer(
   kind: "points" | "perimeters",
   bbox: BoundingBox,
   fetchImplementation: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<WfigsData> {
   const combined: WfigsData = { incidents: [], perimeters: [] };
   for (let page = 0; page < MAXIMUM_PAGES; page += 1) {
@@ -191,6 +192,7 @@ async function fetchLayer(
       { headers: { Accept: "application/geo+json" } },
       fetchImplementation,
       12_000,
+      signal,
     );
     const payload = await boundedJson("WFIGS", response, 8_000_000);
     const parsed = parseWfigsGeoJson(payload, kind);
@@ -205,6 +207,7 @@ export async function fetchWfigs(
   input: { bbox: BoundingBox },
   dependencies: AdapterDependencies = {},
 ): Promise<WfigsPayload> {
+  dependencies.signal?.throwIfAborted();
   if (input.bbox.crossesAntimeridian) {
     throw new SourceAdapterError("WFIGS", "invalid-bbox", "WFIGS requests cannot cross the antimeridian");
   }
@@ -212,8 +215,22 @@ export async function fetchWfigs(
   const load = async (): Promise<WfigsPayload> => {
     const fetchImplementation = dependencies.fetchImplementation ?? fetch;
     const [points, perimeters] = await Promise.all([
-      fetchLayer(POINT_ENDPOINT, WFIGS_POINT_FIELDS, "points", input.bbox, fetchImplementation),
-      fetchLayer(PERIMETER_ENDPOINT, WFIGS_PERIMETER_FIELDS, "perimeters", input.bbox, fetchImplementation),
+      fetchLayer(
+        POINT_ENDPOINT,
+        WFIGS_POINT_FIELDS,
+        "points",
+        input.bbox,
+        fetchImplementation,
+        dependencies.signal,
+      ),
+      fetchLayer(
+        PERIMETER_ENDPOINT,
+        WFIGS_PERIMETER_FIELDS,
+        "perimeters",
+        input.bbox,
+        fetchImplementation,
+        dependencies.signal,
+      ),
     ]);
     const observedTimes = [
       ...points.incidents.flatMap(({ updatedAt }) => (updatedAt ? [updatedAt] : [])),
@@ -230,6 +247,13 @@ export async function fetchWfigs(
     };
   };
   return dependencies.cache
-    ? (await dependencies.cache.getOrLoad(`wfigs:${envelope}`, CACHE_TTLS.wfigs, load)).value
+    ? (
+        await dependencies.cache.getOrLoad(
+          `wfigs:${envelope}`,
+          CACHE_TTLS.wfigs,
+          load,
+          { signal: dependencies.signal, refresh: dependencies.refresh },
+        )
+      ).value
     : load();
 }

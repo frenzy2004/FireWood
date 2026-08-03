@@ -23,10 +23,12 @@ export const AGENT_TOOL_NAMES = [
 export type AgentToolName = (typeof AGENT_TOOL_NAMES)[number];
 
 export interface AgentRepository {
-  listAssets(): Promise<SavedAsset[]>;
-  listAlerts(assetId: string): Promise<StoredAlert[]>;
-  saveSnapshot(snapshot: Snapshot): Promise<void>;
-  saveAgentRun(input: SaveAgentRunInput): Promise<StoredAgentRun>;
+  listAssets(signal?: AbortSignal): Promise<SavedAsset[]>;
+  listAlerts(assetId: string, signal?: AbortSignal): Promise<StoredAlert[]>;
+  saveAgentRun(
+    input: SaveAgentRunInput,
+    signal?: AbortSignal,
+  ): Promise<StoredAgentRun>;
 }
 
 export type SnapshotService = (
@@ -294,7 +296,7 @@ async function resolveAsset(
     typeof requestedAssetId === "string"
       ? requestedAssetId
       : context.activeAssetId;
-  const assets = await context.repository.listAssets();
+  const assets = await context.repository.listAssets(context.signal);
   ensureActive(context);
   const savedAsset = assets.find(
     (candidate) => candidate.id === assetId,
@@ -324,11 +326,6 @@ async function snapshotFor(
   });
   ensureActive(context);
   context.snapshots.set(savedAsset.id, snapshot);
-  if (refresh) {
-    ensureActive(context);
-    await context.repository.saveSnapshot(snapshot);
-    ensureActive(context);
-  }
   return snapshot;
 }
 
@@ -370,7 +367,7 @@ export async function executeAgentTool(
 ): Promise<AgentToolExecution> {
   ensureActive(context);
   if (toolName === "list_assets") {
-    const assets = await context.repository.listAssets();
+    const assets = await context.repository.listAssets(context.signal);
     ensureActive(context);
     return {
       data: {
@@ -404,7 +401,10 @@ export async function executeAgentTool(
 
   if (toolName === "inspect_asset") {
     ensureActive(context);
-    const alerts = await context.repository.listAlerts(savedAsset.id);
+    const alerts = await context.repository.listAlerts(
+      savedAsset.id,
+      context.signal,
+    );
     ensureActive(context);
     return {
       data: {
@@ -588,7 +588,10 @@ function sanitizeUrl(value: string): string {
 export function sanitizeAgentValue(value: unknown, depth = 0): unknown {
   if (depth > 8) return "[depth-limited]";
   if (typeof value === "string") {
-    const sanitized = /^https?:\/\//i.test(value) ? sanitizeUrl(value) : value;
+    const urlCandidate = value.trimStart();
+    const sanitized = /^https?:\/\//i.test(urlCandidate)
+      ? sanitizeUrl(urlCandidate)
+      : value;
     return sanitized.length > 2_000 ? `${sanitized.slice(0, 2_000)}…` : sanitized;
   }
   if (

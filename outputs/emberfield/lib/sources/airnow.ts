@@ -112,6 +112,7 @@ export async function fetchAirQuality(
   input: FetchAirQualityInput,
   dependencies: AdapterDependencies = {},
 ): Promise<AirQualityPayload> {
+  dependencies.signal?.throwIfAborted();
   const fetchedAt = utcNow(dependencies.now);
   if (!input.apiKey) {
     return {
@@ -137,6 +138,7 @@ export async function fetchAirQuality(
       { headers: { Accept: "application/json" } },
       dependencies.fetchImplementation ?? fetch,
       12_000,
+      dependencies.signal,
     );
     const observations = parseAirNow(await boundedJson("AirNow", response, 1_000_000));
     const selected = observations.find(({ parameter }) => parameter === "PM2.5") ?? null;
@@ -160,6 +162,11 @@ export async function fetchAirQuality(
   };
   const cacheKey = `airnow:${input.location.lat},${input.location.lon}`;
   return dependencies.cache
-    ? (await dependencies.cache.getOrLoad(cacheKey, CACHE_TTLS.airnow, load)).value
+    ? (
+        await dependencies.cache.getOrLoad(cacheKey, CACHE_TTLS.airnow, load, {
+          signal: dependencies.signal,
+          refresh: dependencies.refresh,
+        })
+      ).value
     : load();
 }

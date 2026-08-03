@@ -166,11 +166,19 @@ export async function fetchWeatherContext(
   input: FetchWeatherInput,
   dependencies: AdapterDependencies = {},
 ): Promise<WeatherPayload> {
+  dependencies.signal?.throwIfAborted();
   const fetchImplementation = dependencies.fetchImplementation ?? fetch;
   const headers = { Accept: "application/geo+json", "User-Agent": NWS_USER_AGENT };
   const pointUrl = `https://api.weather.gov/points/${input.location.lat},${input.location.lon}`;
   const loadGridUrl = async () => {
-    const pointResponse = await fetchWithTimeout("NWS", pointUrl, { headers }, fetchImplementation, 12_000);
+    const pointResponse = await fetchWithTimeout(
+      "NWS",
+      pointUrl,
+      { headers },
+      fetchImplementation,
+      12_000,
+      dependencies.signal,
+    );
     const pointPayload = asRecord(await boundedJson("NWS", pointResponse, 1_000_000));
     const gridUrl = asRecord(pointPayload?.properties)?.forecastGridData;
     if (typeof gridUrl !== "string" || !gridUrl.startsWith("https://api.weather.gov/")) {
@@ -184,6 +192,7 @@ export async function fetchWeatherContext(
           `nws:point:${input.location.lat},${input.location.lon}`,
           CACHE_TTLS.nwsPointMapping,
           loadGridUrl,
+          { signal: dependencies.signal, refresh: dependencies.refresh },
         )
       ).value
     : await loadGridUrl();
@@ -191,7 +200,14 @@ export async function fetchWeatherContext(
     throw new SourceAdapterError("NWS", "invalid-response", "NWS point response omitted forecast grid data");
   }
   const loadGrid = async () => {
-    const gridResponse = await fetchWithTimeout("NWS", gridUrl, { headers }, fetchImplementation, 12_000);
+    const gridResponse = await fetchWithTimeout(
+      "NWS",
+      gridUrl,
+      { headers },
+      fetchImplementation,
+      12_000,
+      dependencies.signal,
+    );
     return boundedJson("NWS", gridResponse, 5_000_000);
   };
   const gridPayload = dependencies.cache
@@ -200,6 +216,7 @@ export async function fetchWeatherContext(
           `nws:grid:${gridUrl}`,
           CACHE_TTLS.nwsObservations,
           loadGrid,
+          { signal: dependencies.signal, refresh: dependencies.refresh },
         )
       ).value
     : await loadGrid();

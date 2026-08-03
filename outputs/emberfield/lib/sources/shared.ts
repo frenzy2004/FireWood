@@ -7,6 +7,8 @@ export interface AdapterDependencies {
   fetchImplementation?: typeof fetch;
   now?: () => Date;
   cache?: TtlCache;
+  signal?: AbortSignal;
+  refresh?: boolean;
 }
 
 export class SourceAdapterError extends Error {
@@ -28,6 +30,8 @@ interface ResponseLifecycle {
   controller: AbortController;
   timeout: ReturnType<typeof setTimeout>;
   timedOut: boolean;
+  externallyAborted: boolean;
+  removeExternalAbort?: () => void;
   reader?: ReadableStreamDefaultReader<Uint8Array>;
 }
 
@@ -37,6 +41,7 @@ function finishResponse(response: Response, abort = false): void {
   const lifecycle = responseLifecycles.get(response);
   if (!lifecycle) return;
   clearTimeout(lifecycle.timeout);
+  lifecycle.removeExternalAbort?.();
   if (abort && !lifecycle.controller.signal.aborted) {
     lifecycle.controller.abort();
   }
@@ -61,12 +66,27 @@ export async function fetchWithTimeout(
   init: RequestInit,
   fetchImplementation: typeof fetch,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<Response> {
+  if (signal?.aborted) {
+    throw new SourceAdapterError(source, "aborted", `${source} request was aborted`);
+  }
   const controller = new AbortController();
   const lifecycle = {
     controller,
     timedOut: false,
+    externallyAborted: false,
   } as ResponseLifecycle;
+  if (signal) {
+    const onExternalAbort = () => {
+      lifecycle.externallyAborted = true;
+      controller.abort(signal.reason);
+      void lifecycle.reader?.cancel().catch(() => undefined);
+    };
+    signal.addEventListener("abort", onExternalAbort, { once: true });
+    lifecycle.removeExternalAbort = () =>
+      signal.removeEventListener("abort", onExternalAbort);
+  }
   lifecycle.timeout = setTimeout(() => {
     lifecycle.timedOut = true;
     controller.abort();
@@ -78,22 +98,35 @@ export async function fetchWithTimeout(
       ...init,
       signal: controller.signal,
     });
-    if (lifecycle.timedOut) {
+    if (lifecycle.externallyAborted || lifecycle.timedOut) {
       clearTimeout(lifecycle.timeout);
+      lifecycle.removeExternalAbort?.();
       await response.body?.cancel().catch(() => undefined);
-      throw new SourceAdapterError(source, "timeout", `${source} request timed out`);
+      throw new SourceAdapterError(
+        source,
+        lifecycle.externallyAborted ? "aborted" : "timeout",
+        lifecycle.externallyAborted
+          ? `${source} request was aborted`
+          : `${source} request timed out`,
+      );
     }
     responseLifecycles.set(response, lifecycle);
     return response;
   } catch (error) {
     clearTimeout(lifecycle.timeout);
+    lifecycle.removeExternalAbort?.();
     if (error instanceof SourceAdapterError) throw error;
-    const code =
-      lifecycle.timedOut ||
-      (error instanceof DOMException && error.name === "AbortError")
+    const code = lifecycle.externallyAborted
+      ? "aborted"
+      : lifecycle.timedOut ||
+          (error instanceof DOMException && error.name === "AbortError")
         ? "timeout"
         : "unavailable";
-    throw new SourceAdapterError(source, code, `${source} request failed`);
+    const message =
+      code === "aborted"
+        ? `${source} request was aborted`
+        : `${source} request failed`;
+    throw new SourceAdapterError(source, code, message);
   }
 }
 
@@ -140,6 +173,13 @@ export async function boundedText(
   try {
     while (true) {
       const chunk = await reader.read();
+      if (lifecycle?.externallyAborted) {
+        throw new SourceAdapterError(
+          source,
+          "aborted",
+          `${source} request was aborted`,
+        );
+      }
       if (lifecycle?.timedOut) {
         throw new SourceAdapterError(
           source,
@@ -169,15 +209,19 @@ export async function boundedText(
     finishResponse(response);
     return new TextDecoder().decode(bytes);
   } catch (error) {
+    const externallyAborted = lifecycle?.externallyAborted ?? false;
     const timedOut =
-      lifecycle?.timedOut ||
-      (error instanceof DOMException && error.name === "AbortError");
+      !externallyAborted &&
+      (lifecycle?.timedOut ||
+        (error instanceof DOMException && error.name === "AbortError"));
     await cancelResponse(response);
     if (error instanceof SourceAdapterError) throw error;
     throw new SourceAdapterError(
       source,
-      timedOut ? "timeout" : "unavailable",
-      timedOut
+      externallyAborted ? "aborted" : timedOut ? "timeout" : "unavailable",
+      externallyAborted
+        ? `${source} request was aborted`
+        : timedOut
         ? `${source} request timed out`
         : `${source} response body failed`,
     );

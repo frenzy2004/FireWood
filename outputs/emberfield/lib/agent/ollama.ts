@@ -183,10 +183,19 @@ function safeTraceIdentity(
   maximumLength = 160,
 ): string | null {
   if (!value) return null;
-  const sanitized = sanitizeAgentValue(value);
-  return typeof sanitized === "string"
-    ? sanitized.slice(0, maximumLength)
-    : "[redacted-identity]";
+  const trimmed = value.trim();
+  const opaqueIdentity = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+  const sensitiveLabel =
+    /(?:api[_-]?key|map[_-]?key|authorization|password|secret|token)/i;
+  if (
+    trimmed.length === 0 ||
+    trimmed.length > maximumLength ||
+    !opaqueIdentity.test(trimmed) ||
+    sensitiveLabel.test(trimmed)
+  ) {
+    return "[redacted-identity]";
+  }
+  return trimmed;
 }
 
 function numericClaims(value: string): number[] {
@@ -195,8 +204,328 @@ function numericClaims(value: string): number[] {
     .filter(Number.isFinite);
 }
 
-function isAnswerGrounded(answer: string, trace: AgentTraceEntry[]): boolean {
-  const citationPattern = /\[evidence:([A-Za-z0-9_-]{1,64})\]/g;
+const CITATION_PATTERN = /\[evidence:([A-Za-z0-9_-]{1,64})\]/g;
+
+const CLAIM_FRAMING_TERMS = new Set([
+  "a",
+  "active",
+  "all",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "because",
+  "been",
+  "being",
+  "brief",
+  "but",
+  "by",
+  "can",
+  "cannot",
+  "clearly",
+  "current",
+  "currently",
+  "data",
+  "did",
+  "do",
+  "does",
+  "evidence",
+  "establish",
+  "for",
+  "from",
+  "guidance",
+  "had",
+  "has",
+  "have",
+  "in",
+  "is",
+  "it",
+  "label",
+  "may",
+  "no",
+  "not",
+  "of",
+  "on",
+  "or",
+  "our",
+  "approach",
+  "evacuation",
+  "reach",
+  "recent",
+  "report",
+  "request",
+  "result",
+  "return",
+  "safe",
+  "show",
+  "so",
+  "some",
+  "source",
+  "spread",
+  "state",
+  "system",
+  "that",
+  "the",
+  "their",
+  "these",
+  "this",
+  "those",
+  "to",
+  "use",
+  "verified",
+  "was",
+  "were",
+  "which",
+  "with",
+  "your",
+]);
+
+const TOOL_EVIDENCE_TERMS: Record<string, string[]> = {
+  list_assets: ["asset", "saved", "available"],
+  inspect_asset: [
+    "asset",
+    "saved",
+    "available",
+    "activity",
+    "alert",
+    "assessment",
+    "context",
+    "detection",
+    "nearby",
+  ],
+  refresh_asset_data: [
+    "asset",
+    "refresh",
+    "refreshed",
+    "fresh",
+    "activity",
+    "detection",
+  ],
+  get_activity_groups: [
+    "activity",
+    "assessment",
+    "context",
+    "detection",
+    "group",
+    "satellite",
+  ],
+  get_weather_context: [
+    "weather",
+    "wind",
+    "moving",
+    "humidity",
+    "nws",
+    "context",
+  ],
+  get_air_quality: ["air", "quality", "aqi", "airnow"],
+  get_official_incidents: [
+    "official",
+    "incident",
+    "perimeter",
+    "confirmed",
+    "wildfire",
+  ],
+  get_timeline: ["activity", "detection", "recent", "satellite", "timeline"],
+  explain_assessment: [
+    "assessment",
+    "context",
+    "deterministic",
+    "reason",
+    "score",
+  ],
+};
+
+function normalizedToken(value: string): string {
+  if (value === "firms" || value === "nws" || value === "aqi") return value;
+  if (value.endsWith("ies") && value.length > 4) return `${value.slice(0, -3)}y`;
+  if (value.endsWith("ing") && value.length > 5) return value.slice(0, -3);
+  if (value.endsWith("ed") && value.length > 4) {
+    const stem = value.slice(0, -2);
+    return stem.at(-1) === stem.at(-2) ? stem.slice(0, -1) : stem;
+  }
+  if (value.endsWith("s") && !value.endsWith("ss") && value.length > 3) {
+    return value.slice(0, -1);
+  }
+  return value;
+}
+
+function lexicalTokens(value: string): string[] {
+  const expanded = value.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
+  return [...expanded.matchAll(/[a-z][a-z0-9]*/g)].map(([token]) =>
+    normalizedToken(token),
+  );
+}
+
+function claimSentences(answer: string): string[] {
+  const citationsAttached = answer.replace(
+    /([.!?])\s*((?:\[evidence:[A-Za-z0-9_-]{1,64}\]\s*)+)/g,
+    (_match, punctuation: string, citations: string) =>
+      ` ${citations.trim()}${punctuation} `,
+  );
+  return citationsAttached
+    .split(/(?<=[.!?])(?:\s+|$)|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+function isAllowedUncitedSentence(sentence: string): boolean {
+  const normalized = sentence.toLowerCase();
+  return (
+    /^(?:current evidence|evidence summary|limitations|next questions|source states?):$/.test(
+      normalized,
+    ) ||
+    /^follow (?:local )?emergency officials(?: and nws alerts)?[.!]?$/.test(
+      normalized,
+    ) ||
+    /^(?:ask|consider|identify|prepare)\b.*\blow[- ]risk\b.*\bquestions?\b[.!?]?$/.test(
+      normalized,
+    ) ||
+    /^data may be (?:delayed|incomplete|inaccurate)(?:,? (?:or|and) (?:delayed|incomplete|inaccurate))*[.!]?$/.test(
+      normalized,
+    )
+  );
+}
+
+function isNegatedAt(sentence: string, index: number): boolean {
+  const prefix = sentence.slice(Math.max(0, index - 120), index);
+  const clause =
+    prefix.split(/[.;!?]|\b(?:and|but|however|or)\b/i).at(-1) ?? prefix;
+  const negations = [
+    ...clause.matchAll(/\b(?:no|not|never|cannot|can't|does not|doesn't|do not|without)\b/gi),
+  ];
+  const lastNegation = negations.at(-1);
+  if (!lastNegation || lastNegation.index === undefined) return false;
+  return lexicalTokens(clause.slice(lastNegation.index)).length <= 10;
+}
+
+function hasUnsupportedSafetyAssertion(sentence: string): boolean {
+  const hasAffirmativeMatch = (pattern: RegExp) =>
+    [...sentence.matchAll(pattern)].some((match) => {
+      if (match.index === undefined) return true;
+      const prefix = sentence.slice(Math.max(0, match.index - 12), match.index);
+      const lowRiskQualifier =
+        /^risks?$/i.test(match[0]) && /\blow[-\s]*$/i.test(prefix);
+      const suffix = sentence.slice(
+        match.index + match[0].length,
+        match.index + match[0].length + 40,
+      );
+      const negatedAfter =
+        /^\W*(?:(?:is|are|was|were)\W+)?(?:no|not|never)\b/i.test(suffix);
+      return (
+        !lowRiskQualifier &&
+        !isNegatedAt(sentence, match.index) &&
+        !negatedAfter
+      );
+    });
+  if (
+    hasAffirmativeMatch(
+      /\b(?:evacuat(?:e|ed|es|ing|ion|ions)|safe|danger(?:ous)?|risk(?:s|y)?)\b/gi,
+    )
+  ) {
+    return true;
+  }
+  const fireContext =
+    /\b(?:wildfires?|fires?|detections?|activity|incidents?|perimeters?|smoke|flames?)\b/i.test(
+      sentence,
+    );
+  const windOnly = /\bwinds?\b/i.test(sentence) && !fireContext;
+  if (
+    !windOnly &&
+    hasAffirmativeMatch(
+      /\b(?:approach(?:ed|es|ing)?|reach(?:ed|es|ing)?|spread(?:s|ing)?)\b/gi,
+    )
+  ) {
+    return true;
+  }
+  return (
+    fireContext &&
+    (hasAffirmativeMatch(
+      /\b(?:mov(?:e|ed|es|ing)|head(?:ed|ing|s)?|advanc(?:e|ed|es|ing)|travel(?:ed|led|ing|ling|s)?)\b/gi,
+    ) ||
+      hasAffirmativeMatch(
+        /\b(?:(?:will|expected to|likely to)\W+)?(?:impact(?:ed|ing|s)?|threaten(?:ed|ing|s)?)\b/gi,
+      ))
+  );
+}
+
+function confirmedWildfireIndex(sentence: string): number | null {
+  if (!/\b(?:wildfire|fire)\b/i.test(sentence)) return null;
+  const confirmation = [
+    ...sentence.matchAll(/\bconfirm(?:ed|s|ing)?\b/gi),
+  ].find(
+    (match) =>
+      match.index !== undefined && !isNegatedAt(sentence, match.index),
+  );
+  return confirmation?.index ?? null;
+}
+
+function officialIncidentNames(entry: AgentTraceEntry): string[] {
+  if (entry.toolName !== "get_official_incidents") return [];
+  const result = asRecord(entry.resultSummary);
+  const data = asRecord(result?.data);
+  if (!Array.isArray(data?.incidents)) return [];
+  return data.incidents.flatMap((candidate) => {
+    const incident = asRecord(candidate);
+    const type = typeof incident?.type === "string" ? incident.type : "";
+    return typeof incident?.name === "string" &&
+      (type.toUpperCase() === "WF" || /wildfire/i.test(type))
+      ? [incident.name]
+      : [];
+  });
+}
+
+function hasMatchingOfficialIncident(
+  sentence: string,
+  entries: AgentTraceEntry[],
+): boolean {
+  const sentenceTokens = lexicalTokens(sentence);
+  return entries
+    .flatMap(officialIncidentNames)
+    .some((name) => {
+      const incidentName = lexicalTokens(name).filter(
+        (token) => token !== "fixture",
+      );
+      return (
+        incidentName.length > 0 &&
+        sentenceTokens.some((_token, index) =>
+          incidentName.every(
+            (incidentToken, offset) =>
+              sentenceTokens[index + offset] === incidentToken,
+          ),
+        )
+      );
+    });
+}
+
+function hasLexicalEvidence(
+  sentence: string,
+  entries: AgentTraceEntry[],
+): boolean {
+  const evidenceTerms = new Set(
+    entries.flatMap((entry) => [
+      ...lexicalTokens(JSON.stringify(entry.resultSummary)),
+      ...(TOOL_EVIDENCE_TERMS[entry.toolName] ?? []).map(normalizedToken),
+    ]),
+  );
+  const claimTerms = [
+    ...new Set(
+      lexicalTokens(sentence.replace(CITATION_PATTERN, "")).filter(
+        (token) => !CLAIM_FRAMING_TERMS.has(token),
+      ),
+    ),
+  ];
+  return (
+    claimTerms.length > 0 &&
+    claimTerms.every((token) => evidenceTerms.has(token))
+  );
+}
+
+export function isAnswerGrounded(
+  answer: string,
+  trace: AgentTraceEntry[],
+): boolean {
   const successfulEvidence = new Map(
     trace.flatMap((entry) =>
       entry.status === "ok" && entry.evidenceRef
@@ -204,7 +533,7 @@ function isAnswerGrounded(answer: string, trace: AgentTraceEntry[]): boolean {
         : [],
     ),
   );
-  const citations = [...answer.matchAll(citationPattern)].map(
+  const citations = [...answer.matchAll(CITATION_PATTERN)].map(
     (match) => match[1],
   );
   if (
@@ -214,15 +543,41 @@ function isAnswerGrounded(answer: string, trace: AgentTraceEntry[]): boolean {
   ) {
     return false;
   }
-  const claims = numericClaims(answer.replace(citationPattern, ""));
-  if (claims.length === 0) return true;
-  const citedEntries = [
-    ...new Set(citations.map((reference) => successfulEvidence.get(reference)!)),
-  ];
-  const evidenceNumbers = new Set(
-    numericClaims(JSON.stringify(citedEntries.map(({ resultSummary }) => resultSummary))),
-  );
-  return claims.every((claim) => evidenceNumbers.has(claim));
+  return claimSentences(answer).every((sentence) => {
+    const sentenceCitations = [...sentence.matchAll(CITATION_PATTERN)].map(
+      (match) => match[1],
+    );
+    const claim = sentence.replace(CITATION_PATTERN, "").trim();
+    if (!claim) return true;
+    if (hasUnsupportedSafetyAssertion(claim)) return false;
+    const confirmation = confirmedWildfireIndex(claim);
+    if (sentenceCitations.length === 0) {
+      return confirmation === null && isAllowedUncitedSentence(claim);
+    }
+    if (sentenceCitations.some((reference) => !successfulEvidence.has(reference))) {
+      return false;
+    }
+    const citedEntries = [
+      ...new Set(
+        sentenceCitations.map((reference) => successfulEvidence.get(reference)!),
+      ),
+    ];
+    const evidenceNumbers = new Set(
+      numericClaims(
+        JSON.stringify(citedEntries.map(({ resultSummary }) => resultSummary)),
+      ),
+    );
+    if (!numericClaims(claim).every((number) => evidenceNumbers.has(number))) {
+      return false;
+    }
+    if (
+      confirmation !== null &&
+      !hasMatchingOfficialIncident(claim, citedEntries)
+    ) {
+      return false;
+    }
+    return hasLexicalEvidence(claim, citedEntries);
+  });
 }
 
 const fallbackAnswers = {
@@ -293,14 +648,17 @@ async function persistResult(
   if (deadline.expired()) return { ...result, persistenceStatus: "error" };
   try {
     await deadline.run(() =>
-      input.repository.saveAgentRun({
-        assetId: input.assetId,
-        prompt: input.prompt,
-        answer: result.answer,
-        model: GEMMA_MODEL,
-        trace: result.trace,
-        durationMs: result.durationMs,
-      }),
+      input.repository.saveAgentRun(
+        {
+          assetId: input.assetId,
+          prompt: input.prompt,
+          answer: result.answer,
+          model: GEMMA_MODEL,
+          trace: result.trace,
+          durationMs: result.durationMs,
+        },
+        deadline.signal,
+      ),
     );
     return { ...result, persistenceStatus: "saved" };
   } catch {

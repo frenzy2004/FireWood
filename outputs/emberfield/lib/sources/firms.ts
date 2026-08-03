@@ -157,6 +157,7 @@ export async function fetchFirmsDetections(
   input: FetchFirmsInput,
   dependencies: AdapterDependencies = {},
 ): Promise<FirmsPayload> {
+  dependencies.signal?.throwIfAborted();
   const fetchedAt = utcNow(dependencies.now);
   if (!input.mapKey) {
     return {
@@ -190,6 +191,7 @@ export async function fetchFirmsDetections(
             { headers: { Accept: "text/csv" } },
             fetchImplementation,
             FIRMS_TIMEOUT_MS,
+            dependencies.signal,
           );
           const csv = await boundedText("FIRMS", response, FIRMS_MAXIMUM_BYTES);
           return parseFirmsCsv(csv, source);
@@ -212,6 +214,13 @@ export async function fetchFirmsDetections(
     };
   };
   return dependencies.cache
-    ? (await dependencies.cache.getOrLoad(`firms:${envelope}`, CACHE_TTLS.firms, load)).value
+    ? (
+        await dependencies.cache.getOrLoad(
+          `firms:${envelope}`,
+          CACHE_TTLS.firms,
+          load,
+          { signal: dependencies.signal, refresh: dependencies.refresh },
+        )
+      ).value
     : load();
 }

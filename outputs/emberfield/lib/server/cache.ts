@@ -13,6 +13,11 @@ export interface CachedValue<T> {
   expiresAt: string;
 }
 
+export interface CacheLoadOptions {
+  signal?: AbortSignal;
+  refresh?: boolean;
+}
+
 interface CacheEntry<T> {
   value: T;
   cachedAt: number;
@@ -24,12 +29,47 @@ export interface TtlCache {
     key: string,
     ttlMs: number,
     loader: () => Promise<T>,
+    options?: CacheLoadOptions,
   ): Promise<CachedValue<T>>;
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("Aborted", "AbortError");
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
+function waitWithSignal<T>(
+  work: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (!signal) return work;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(abortReason(signal));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 export class MemoryTtlCache implements TtlCache {
   private readonly entries = new Map<string, CacheEntry<unknown>>();
   private readonly pending = new Map<string, Promise<CachedValue<unknown>>>();
+  private readonly generations = new Map<string, number>();
 
   constructor(private readonly clock: () => number = Date.now) {}
 
@@ -37,10 +77,17 @@ export class MemoryTtlCache implements TtlCache {
     key: string,
     ttlMs: number,
     loader: () => Promise<T>,
+    options: CacheLoadOptions = {},
   ): Promise<CachedValue<T>> {
+    throwIfAborted(options.signal);
+    const currentGeneration = this.generations.get(key) ?? 0;
+    const generation = options.refresh
+      ? currentGeneration + 1
+      : currentGeneration;
+    if (options.refresh) this.generations.set(key, generation);
     const current = this.clock();
     const existing = this.entries.get(key) as CacheEntry<T> | undefined;
-    if (existing && current < existing.expiresAt) {
+    if (!options.refresh && existing && current < existing.expiresAt) {
       return {
         value: existing.value,
         cache: "hit",
@@ -48,16 +95,25 @@ export class MemoryTtlCache implements TtlCache {
         expiresAt: new Date(existing.expiresAt).toISOString(),
       };
     }
-    this.entries.delete(key);
+    if (!options.refresh) this.entries.delete(key);
 
     const pending = this.pending.get(key) as Promise<CachedValue<T>> | undefined;
-    if (pending) return pending;
+    if (!options.refresh && pending) {
+      return waitWithSignal(pending, options.signal);
+    }
 
-    const work = loader()
+    const work: Promise<CachedValue<T>> = Promise.resolve()
+      .then(() => {
+        throwIfAborted(options.signal);
+        return loader();
+      })
       .then((value) => {
+        throwIfAborted(options.signal);
         const cachedAt = this.clock();
         const expiresAt = cachedAt + Math.max(0, ttlMs);
-        this.entries.set(key, { value, cachedAt, expiresAt });
+        if ((this.generations.get(key) ?? 0) === generation) {
+          this.entries.set(key, { value, cachedAt, expiresAt });
+        }
         return {
           value,
           cache: "miss" as const,
@@ -66,10 +122,10 @@ export class MemoryTtlCache implements TtlCache {
         };
       })
       .finally(() => {
-        this.pending.delete(key);
+        if (this.pending.get(key) === work) this.pending.delete(key);
       });
-    this.pending.set(key, work);
-    return work;
+    if (!options.refresh) this.pending.set(key, work);
+    return waitWithSignal(work, options.signal);
   }
 }
 

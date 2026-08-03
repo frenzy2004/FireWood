@@ -15,8 +15,12 @@ import {
   type AgentRepository,
   type SnapshotService,
 } from "../lib/agent/tools";
-import { runAgent } from "../lib/agent/ollama";
-import type { SavedAsset } from "../lib/server/repository";
+import {
+  isAnswerGrounded,
+  runAgent,
+  type AgentTraceEntry,
+} from "../lib/agent/ollama";
+import type { SavedAsset, StoredAgentRun } from "../lib/server/repository";
 import { buildSnapshot, type Snapshot } from "../lib/server/snapshot";
 
 const fixedNow = new Date("2026-08-03T12:00:00.000Z");
@@ -84,9 +88,6 @@ function harness(snapshotTransform?: (snapshot: Snapshot) => Snapshot) {
   const repository: AgentRepository = {
     listAssets: vi.fn(async () => [asset]),
     listAlerts: vi.fn(async () => []),
-    saveSnapshot: vi.fn(async (snapshot) => {
-      snapshots.push(snapshot);
-    }),
     saveAgentRun: vi.fn(async (input) => ({
       ...input,
       id: "agent-run-1",
@@ -201,7 +202,7 @@ describe("Gemma native tool loop", () => {
     ).toMatchObject({ ok: false, error: "unknown-tool" });
   });
 
-  it("executes every allowlisted evidence tool and persists an explicit refresh", async () => {
+  it("executes every allowlisted evidence tool without persisting refresh snapshots", async () => {
     const argumentsByTool: Record<string, Record<string, unknown>> = {
       list_assets: {},
       inspect_asset: { assetId: asset.id },
@@ -229,7 +230,7 @@ describe("Gemma native tool loop", () => {
         done_reason: "stop",
         message: { role: "assistant", content: "", tool_calls: calls },
       },
-      assistant("All requested evidence tools returned source-labelled results. [evidence:1]"),
+      assistant("The saved orchard is available. [evidence:1]"),
     ]);
     const { repository, snapshotService, snapshots } = harness();
 
@@ -244,7 +245,7 @@ describe("Gemma native tool loop", () => {
       AGENT_TOOL_DEFINITIONS.map((definition) => definition.function.name),
     );
     expect(result.trace.every(({ status }) => status === "ok")).toBe(true);
-    expect(snapshots).toHaveLength(1);
+    expect(snapshots).toHaveLength(0);
     const continuation = ollama.requests[1] as {
       messages: Array<{ role: string; content: string }>;
     };
@@ -366,6 +367,52 @@ describe("Gemma native tool loop", () => {
     );
   });
 
+  it("aborts delayed persistence before it can mutate after the response timeout", async () => {
+    vi.useFakeTimers();
+    const ollama = mockOllama([
+      toolCall("list_assets", {}),
+      assistant("The saved orchard is available. [evidence:1]"),
+    ]);
+    const { repository, snapshotService } = harness();
+    const mutations: string[] = [];
+    repository.saveAgentRun = vi.fn(
+      async (input, signal): Promise<StoredAgentRun> =>
+        new Promise<StoredAgentRun>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            mutations.push(input.answer);
+            resolve({
+              ...input,
+              id: "late-agent-run",
+              createdAt: fixedNow.toISOString(),
+            });
+          }, 50_000);
+          signal?.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer);
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        }),
+    );
+
+    const pending = runAgent({
+      ...runInput(ollama.fetchImplementation),
+      repository,
+      snapshotService,
+    });
+    await vi.advanceTimersByTimeAsync(45_000);
+    await expect(pending).resolves.toMatchObject({ persistenceStatus: "error" });
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(mutations).toEqual([]);
+    expect(repository.saveAgentRun).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.any(AbortSignal),
+    );
+  });
+
   it("stops after six tool-call rounds", async () => {
     const calls = Array.from({ length: 6 }, (_, index) =>
       toolCall("list_assets", {}, `call-${index}`, index),
@@ -441,7 +488,7 @@ describe("Gemma native tool loop", () => {
     expect(repository.listAssets).toHaveBeenCalledTimes(18);
   });
 
-  it("allows only one refresh side effect per run", async () => {
+  it("allows only one refresh call per run without an uncancellable snapshot write", async () => {
     const ollama = mockOllama([
       {
         message: {
@@ -471,7 +518,14 @@ describe("Gemma native tool loop", () => {
       "tool-error",
     ]);
     expect(snapshotService).toHaveBeenCalledTimes(1);
-    expect(snapshots).toHaveLength(1);
+    expect(snapshotService).toHaveBeenCalledWith(
+      asset,
+      expect.objectContaining({
+        refresh: true,
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    expect(snapshots).toHaveLength(0);
   });
 
   it("blocks a final numeric claim that was not present in visible tool evidence", async () => {
@@ -528,6 +582,202 @@ describe("Gemma native tool loop", () => {
     });
   });
 
+  it("accepts an ordinary active-asset fixture summary from inspect evidence", async () => {
+    const ollama = mockOllama([
+      toolCall("inspect_asset", { assetId: asset.id }),
+      assistant(
+        "The active asset is Sierra Vista Almonds, which is currently in fixture mode [evidence:1].",
+      ),
+    ]);
+
+    const result = await runAgent(runInput(ollama.fetchImplementation));
+
+    expect(result.status).toBe("ok");
+  });
+
+  it("does not let list_assets evidence bless unrelated factual prose", async () => {
+    const ollama = mockOllama([
+      toolCall("list_assets", {}),
+      assistant("The moon over the orchard is green. [evidence:1]"),
+    ]);
+
+    const result = await runAgent(runInput(ollama.fetchImplementation));
+
+    expect(result.status).toBe("grounding-error");
+  });
+
+  it("rejects generic prose even when it carries a successful citation", async () => {
+    const ollama = mockOllama([
+      toolCall("list_assets", {}),
+      assistant("This is current verified evidence. [evidence:1]"),
+    ]);
+
+    const result = await runAgent(runInput(ollama.fetchImplementation));
+
+    expect(result.status).toBe("grounding-error");
+  });
+
+  it("checks numeric claims against citations on the same sentence", async () => {
+    const ollama = mockOllama([
+      {
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            toolCall("list_assets", {}, "asset-call", 0).message.tool_calls[0],
+            toolCall("get_air_quality", { assetId: asset.id }, "air-call", 1)
+              .message.tool_calls[0],
+          ],
+        },
+      },
+      assistant(
+        "The saved orchard has AQI 71. [evidence:1] AirNow reports AQI 71. [evidence:2]",
+      ),
+    ]);
+
+    const result = await runAgent(runInput(ollama.fetchImplementation));
+
+    expect(result.status).toBe("grounding-error");
+  });
+
+  it.each([
+    "Satellite detections are approaching the orchard. [evidence:1]",
+    "Satellite detections are reaching the orchard. [evidence:1]",
+    "Satellite detections are spreading toward the orchard. [evidence:1]",
+    "An evacuation is underway. [evidence:1]",
+    "The orchard is safe. [evidence:1]",
+  ])("blocks an unsupported safety-sensitive assertion: %s", async (answer) => {
+    const ollama = mockOllama([
+      toolCall("inspect_asset", { assetId: asset.id }),
+      assistant(answer),
+    ]);
+
+    const result = await runAgent(runInput(ollama.fetchImplementation));
+
+    expect(result.status).toBe("grounding-error");
+  });
+
+  it("does not treat an uncited safety assertion as a harmless heading", async () => {
+    const ollama = mockOllama([
+      toolCall("list_assets", {}),
+      assistant(
+        "The saved orchard is available. [evidence:1] The orchard is safe:",
+      ),
+    ]);
+
+    const result = await runAgent(runInput(ollama.fetchImplementation));
+
+    expect(result.status).toBe("grounding-error");
+  });
+
+  it("blocks affirmative wildfire movement even when those words appear in evidence", () => {
+    const trace: AgentTraceEntry[] = [
+      {
+        evidenceRef: "1",
+        callId: "call-1",
+        functionIndex: 0,
+        toolName: "inspect_asset",
+        validatedArguments: { assetId: asset.id },
+        durationMs: 1,
+        status: "ok",
+        sourceStatus: null,
+        resultSummary: {
+          data: {
+            asset: { category: "orchard" },
+            unsafeUpstreamText: "wildfire moving toward orchard",
+          },
+        },
+      },
+    ];
+
+    expect(
+      isAnswerGrounded(
+        "The wildfire is moving toward the orchard. [evidence:1]",
+        trace,
+      ),
+    ).toBe(false);
+  });
+
+  it("allows factual wind movement from weather evidence", async () => {
+    const ollama = mockOllama([
+      toolCall("get_weather_context", { assetId: asset.id }),
+      assistant("The fixture wind is moving with speed 7.2. [evidence:1]"),
+    ]);
+
+    const result = await runAgent(runInput(ollama.fetchImplementation));
+
+    expect(result.status).toBe("ok");
+  });
+
+  it("allows a low-risk preparation question without treating it as a risk claim", () => {
+    const trace: AgentTraceEntry[] = [
+      {
+        evidenceRef: "1",
+        callId: "call-1",
+        functionIndex: 0,
+        toolName: "list_assets",
+        validatedArguments: {},
+        durationMs: 1,
+        status: "ok",
+        sourceStatus: null,
+        resultSummary: { data: { assets: [{ category: "orchard" }] } },
+      },
+    ];
+
+    expect(
+      isAnswerGrounded(
+        "The saved orchard is available. [evidence:1] Consider low-risk preparation questions.",
+        trace,
+      ),
+    ).toBe(true);
+  });
+
+  it("requires a matching successful official-incident result for a confirmed wildfire", async () => {
+    const ollama = mockOllama([
+      toolCall("get_official_incidents", { assetId: asset.id }),
+      assistant("Juniper Ridge is a confirmed wildfire. [evidence:1]"),
+    ]);
+
+    const result = await runAgent(runInput(ollama.fetchImplementation));
+
+    expect(result.status).toBe("grounding-error");
+  });
+
+  it("accepts a matching confirmed wildfire from successful official evidence", async () => {
+    const ollama = mockOllama([
+      toolCall("get_official_incidents", { assetId: asset.id }),
+      assistant("Antelope Creek is a confirmed wildfire. [evidence:1]"),
+    ]);
+
+    const result = await runAgent(runInput(ollama.fetchImplementation));
+
+    expect(result.status).toBe("ok");
+  });
+
+  it("does not accept inspect evidence as official wildfire confirmation", async () => {
+    const ollama = mockOllama([
+      toolCall("inspect_asset", { assetId: asset.id }),
+      assistant("Antelope Creek is a confirmed wildfire. [evidence:1]"),
+    ]);
+
+    const result = await runAgent(runInput(ollama.fetchImplementation));
+
+    expect(result.status).toBe("grounding-error");
+  });
+
+  it("allows an explicit safety disclaimer backed by relevant evidence", async () => {
+    const ollama = mockOllama([
+      toolCall("inspect_asset", { assetId: asset.id }),
+      assistant(
+        "The fixture satellite detections do not establish that the orchard is safe. [evidence:1]",
+      ),
+    ]);
+
+    const result = await runAgent(runInput(ollama.fetchImplementation));
+
+    expect(result.status).toBe("ok");
+  });
+
   it("redacts credential-bearing URLs from tool messages and visible traces", async () => {
     const ollama = mockOllama([
       toolCall("inspect_asset", { assetId: asset.id }),
@@ -563,8 +813,8 @@ describe("Gemma native tool loop", () => {
   it("sanitizes model-controlled trace identity while preserving private protocol identity", async () => {
     const callSecret = "call-secret-value";
     const nameSecret = "name-secret-value";
-    const rawCallId = `https://example.test/call?api_key=${callSecret}`;
-    const rawToolName = `https://[broken]?token=${nameSecret}`;
+    const rawCallId = `  https://example.test/call?api_key=${callSecret}`;
+    const rawToolName = `  https://[broken]?token=${nameSecret}`;
     const ollama = mockOllama([
       toolCall(rawToolName, {}, rawCallId),
       assistant("That operation is not available."),
@@ -586,10 +836,14 @@ describe("Gemma native tool loop", () => {
     expect(JSON.stringify(persisted?.trace)).not.toContain(callSecret);
     expect(JSON.stringify(persisted?.trace)).not.toContain(nameSecret);
     expect(JSON.stringify(continuation.messages)).toContain(callSecret);
+    expect(result.trace[0]).toMatchObject({
+      callId: "[redacted-identity]",
+      toolName: "[redacted-identity]",
+    });
   });
 
   it("redacts malformed URL-like values instead of returning them unchanged", () => {
-    const malformed = "https://[broken]?api_key=malformed-secret";
+    const malformed = "  https://[broken]?api_key=malformed-secret";
 
     expect(sanitizeAgentValue(malformed)).toBe("[redacted-url]");
   });
