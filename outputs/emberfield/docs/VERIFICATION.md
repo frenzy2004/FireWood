@@ -12,14 +12,14 @@ Snapshot persistence and historical replay status: **COMPLETE FOR THE LOCAL PROT
 
 | Command | Recorded result |
 | --- | --- |
-| `npm test` | Passed: 15 test files, 184 tests |
+| `npm test` | Passed: 15 test files, 187 tests |
 | `npm run lint` | Passed with no ESLint findings |
 | `npm run build` | Passed; Vinext produced the app and six API routes |
 | `npm run db:local` | Passed; all versioned migrations applied, and the repeat run reported no pending migrations |
 
 The build emitted one non-blocking warning about client chunks larger than 500 kB after minification.
 
-The test suite covers source parsing, request timeouts and size limits, cache behavior, geometry and perimeter-radius intersection, clustering, scoring, alert deduplication, bounded persistence, source composition, repository behavior, API boundaries, Gemma tool orchestration and claim grounding, redaction, UI state, replay behavior, and accessibility-oriented interactions.
+The test suite covers source parsing, request timeouts and size limits, cache behavior, geometry and perimeter-radius intersection, clustering, repeated-pass scoring, alert deduplication, bounded persistence, source composition, repository behavior, fixture identity isolation, native Gemma Census geocoding, tool orchestration and claim grounding, redaction, UI state, replay behavior, and accessibility-oriented interactions.
 
 Final desktop browser QA at 1280 by 720 verified:
 
@@ -64,6 +64,8 @@ The active evidence mode for this ranch is fixture [evidence:1].
 ```
 
 The successful warm run completed in about 26.2 seconds and returned `persistenceStatus: not-persisted`. A separate cold or queued run reached the fixed 45 second timeout and returned the explicit warm-up fallback. Warm the model before judging.
+
+After the final tool-set review, a second real request proved the new native `geocode_location` path. Gemma selected the tool, the live US Census Geocoder returned `status: ok`, and Gemma produced `The Census source mode is live [evidence:1].` in two rounds and about 7.0 seconds. The trace reported `geocode_location`, a server-issued evidence reference, and live Census source state; the prompt, answer, and trace were not persisted.
 
 A broader live-orchard prompt also selected `inspect_asset` and received current live evidence, but the generated synthesis failed the conservative claim-level validator. The route returned the safe grounding fallback rather than exposing unsupported prose. The deterministic panels and visible tool result remain authoritative.
 
