@@ -38,7 +38,7 @@ describe("deriveAlerts", () => {
     );
   });
 
-  it("evaluates independent trigger families for a new in-radius cluster", () => {
+  it("does not describe a brand-new in-radius cluster as a new satellite confirmation", () => {
     const firstEvaluation = {
       ...current,
       matchedOfficialIncidentId: "incident-7",
@@ -46,7 +46,6 @@ describe("deriveAlerts", () => {
 
     expect(deriveAlerts(null, firstEvaluation).map(({ type }) => type)).toEqual([
       "new-cluster",
-      "new-satellite",
       "official-incident",
     ]);
   });

@@ -236,6 +236,62 @@ describe("source-aware cache", () => {
 });
 
 describe("snapshot composition", () => {
+  it("counts repeated observation times from the same satellite as distinct passes", async () => {
+    const repeatedPass = {
+      ...firmsPayload.detections[0],
+      id: "repeat-pass",
+      fingerprint: "repeat-pass",
+      acquiredAt: "2026-08-03T05:30:00.000Z",
+    };
+    const samePassPixel = {
+      ...repeatedPass,
+      id: "same-pass-pixel",
+      fingerprint: "same-pass-pixel",
+      lat: repeatedPass.lat + 0.001,
+    };
+    const snapshot = await buildSnapshot(
+      { asset: DEMO_ASSET, bbox: DEMO_BBOX, mode: "live" },
+      {
+        now: () => now,
+        config: {
+          firms: { mapKey: "configured" },
+          airnow: { apiKey: "" },
+          ollama: { baseUrl: "http://127.0.0.1:11434", model: "gemma4:12b" },
+        },
+        fetchFirms: async () => ({
+          ...firmsPayload,
+          detections: [
+            ...firmsPayload.detections,
+            repeatedPass,
+            samePassPixel,
+          ],
+        }),
+        fetchWeather: async () => weatherPayload,
+        fetchAir: async () => ({
+          mode: "live",
+          status: "missing-key",
+          source: "AirNow",
+          fetchedAt: now.toISOString(),
+          observedAt: null,
+          observations: [],
+          air: null,
+        }),
+        fetchWfigs: async () => ({
+          ...wfigsPayload,
+          incidents: [],
+          perimeters: [],
+        }),
+      },
+    );
+    const passContribution = snapshot.groups[0].assessment.contributions.find(
+      ({ code }) => code === "distinct-passes",
+    );
+
+    expect(snapshot.groups[0].cluster.satellites).toEqual(["NOAA-20", "NOAA-21"]);
+    expect(snapshot.groups[0].cluster.detectionCount).toBe(4);
+    expect(passContribution?.normalizedValue).toBe(0.6);
+  });
+
   it("enforces the exact asset radius before clustering", async () => {
     const snapshot = await buildSnapshot(
       { asset: DEMO_ASSET, bbox: DEMO_BBOX, mode: "live" },

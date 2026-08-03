@@ -45,7 +45,10 @@ export function deriveAlerts(
   }
 
   const previousSatellites = new Set(previous?.satellites ?? []);
-  if (current.satellites.some((satellite) => !previousSatellites.has(satellite))) {
+  if (
+    previous !== null &&
+    current.satellites.some((satellite) => !previousSatellites.has(satellite))
+  ) {
     types.push("new-satellite");
   }
 

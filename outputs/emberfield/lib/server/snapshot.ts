@@ -369,6 +369,17 @@ function assessmentFor(
   air: AirQualityContext | null,
   now: Date,
 ): Assessment {
+  const nowMs = now.getTime();
+  const cutoffMs = nowMs - 24 * 60 * 60 * 1_000;
+  const distinctPasses24h = new Set(
+    cluster.detections.flatMap((detection) => {
+      const acquiredAtMs = Date.parse(detection.acquiredAt);
+      return acquiredAtMs >= cutoffMs && acquiredAtMs <= nowMs
+        ? [`${detection.satellite}:${detection.acquiredAt}`]
+        : [];
+    }),
+  ).size;
+
   return assessCluster({
     assetId: asset.id,
     clusterId: cluster.id,
@@ -376,7 +387,7 @@ function assessmentFor(
     ageHours: Math.max(0, (now.getTime() - Date.parse(cluster.latestAcquiredAt)) / 3_600_000),
     confidence: cluster.maxConfidence,
     frpMw: cluster.maxFrpMw,
-    distinctPasses24h: cluster.satellites.length,
+    distinctPasses24h,
     bearingClusterToAsset: bearingDegrees(cluster.centroid, asset.location),
     weather,
     air,
