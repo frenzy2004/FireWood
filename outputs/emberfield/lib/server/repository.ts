@@ -122,8 +122,6 @@ const asSavedAsset = (row: AssetRow): SavedAsset => ({
   name: row.name,
   category: row.category,
   location: { lat: Number(row.latitude), lon: Number(row.longitude) },
-  latitude: Number(row.latitude),
-  longitude: Number(row.longitude),
   radiusKm: Number(row.radius_km),
   notes: row.notes,
   createdAt: row.created_at,
@@ -142,13 +140,37 @@ const asStoredAlert = (row: AlertRow): StoredAlert => ({
   acknowledged: Boolean(row.acknowledged),
 });
 
-const safeSourceUrl = (candidate: string | null): string | null => {
+const safeSourceUrl = (
+  source: string,
+  candidate: string | null,
+): string | null => {
   if (!candidate) return null;
+  const normalizedSource = source.trim().toUpperCase();
+  if (normalizedSource.includes("FIRMS") || normalizedSource.includes("AIRNOW")) {
+    return null;
+  }
   try {
     const url = new URL(candidate);
-    return url.protocol === "https:" && !url.username && !url.password
-      ? url.toString()
-      : null;
+    if (
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      url.port
+    ) {
+      return null;
+    }
+    const isNws =
+      normalizedSource.startsWith("NWS") && url.hostname === "api.weather.gov";
+    const isWfigs =
+      normalizedSource.startsWith("WFIGS") &&
+      url.hostname === "services3.arcgis.com" &&
+      url.pathname.startsWith(
+        "/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_",
+      );
+    if (!isNws && !isWfigs) return null;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
   } catch {
     return null;
   }
@@ -156,9 +178,9 @@ const safeSourceUrl = (candidate: string | null): string | null => {
 
 const normalizedSourceState = (state: SnapshotSourceState) => ({
   ...state,
-  sourceUrl: safeSourceUrl(state.sourceUrl),
+  sourceUrl: safeSourceUrl(state.source, state.sourceUrl),
   sourceUrls: state.sourceUrls
-    ?.map((sourceUrl) => safeSourceUrl(sourceUrl))
+    ?.map((sourceUrl) => safeSourceUrl(state.source, sourceUrl))
     .filter((sourceUrl): sourceUrl is string => sourceUrl !== null),
 });
 

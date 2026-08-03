@@ -225,7 +225,8 @@ describe("AssetRepository", () => {
 
     const created = await repository.createAsset(input);
 
-    expect((await repository.listAssets())[0].id).toBe(created.id);
+    const listed = (await repository.listAssets())[0];
+    expect(listed.id).toBe(created.id);
     expect(created).toMatchObject({
       name: input.name,
       category: input.category,
@@ -237,6 +238,8 @@ describe("AssetRepository", () => {
     });
     expect(created).not.toHaveProperty("latitude");
     expect(created).not.toHaveProperty("longitude");
+    expect(listed).not.toHaveProperty("latitude");
+    expect(listed).not.toHaveProperty("longitude");
     expect(database.preparedQueries.join("\n")).not.toContain(input.name);
     expect(database.binds.some(({ values }) => values.includes(input.name))).toBe(true);
   });
@@ -290,6 +293,61 @@ describe("AssetRepository", () => {
       expect.objectContaining({ id: alert.id, acknowledged: false }),
     ]);
     expect(database.preparedQueries.every((query) => !query.includes(";"))).toBe(true);
+  });
+
+  it("removes secrets from persisted source provenance", async () => {
+    const { database, repository } = createRepository();
+    const snapshot = snapshotFor("asset-1");
+    snapshot.sources = {
+      firms: {
+        ...snapshot.sources.firms,
+        source: "NASA FIRMS",
+        sourceUrl: "https://firms.modaps.eosdis.nasa.gov/api/area/csv?API_KEY=firms-secret",
+      },
+      airnow: {
+        ...snapshot.sources.airnow,
+        source: "AirNow",
+        sourceUrl: "https://www.airnowapi.org/aq/observation/?API_KEY=air-secret",
+      },
+      nws: {
+        ...snapshot.sources.nws,
+        source: "NWS",
+        sourceUrl: "https://api.weather.gov/gridpoints/HNX/53,100?token=nws-secret#private",
+        sourceUrls: [
+          "https://api.weather.gov/gridpoints/HNX/53,100?access_key=second-secret",
+        ],
+      },
+      wfigs: {
+        ...snapshot.sources.wfigs,
+        source: "WFIGS",
+        sourceUrl: "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Incident_Locations_Current/FeatureServer/0/query?token=wfigs-secret#private",
+      },
+    };
+
+    await repository.saveSnapshot(snapshot);
+
+    const sourceWrites = database.binds
+      .filter(({ query }) => query.includes("INSERT INTO source_snapshots"))
+      .map(({ values }) => ({
+        source: values[2],
+        sourceUrl: values[7],
+        payload: String(values[8]),
+      }));
+    const bySource = new Map(sourceWrites.map((write) => [write.source, write]));
+    expect(bySource.get("NASA FIRMS")?.sourceUrl).toBeNull();
+    expect(bySource.get("AirNow")?.sourceUrl).toBeNull();
+    expect(bySource.get("NWS")?.sourceUrl).toBe(
+      "https://api.weather.gov/gridpoints/HNX/53,100",
+    );
+    expect(bySource.get("WFIGS")?.sourceUrl).toBe(
+      "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Incident_Locations_Current/FeatureServer/0/query",
+    );
+    expect(JSON.parse(bySource.get("NWS")?.payload ?? "{}")).toMatchObject({
+      sourceUrl: "https://api.weather.gov/gridpoints/HNX/53,100",
+      sourceUrls: ["https://api.weather.gov/gridpoints/HNX/53,100"],
+    });
+    expect(sourceWrites.map(({ sourceUrl, payload }) => `${sourceUrl}${payload}`).join("\n"))
+      .not.toMatch(/firms-secret|air-secret|nws-secret|second-secret|wfigs-secret|API_KEY|access_key/);
   });
 
   it("saves bounded agent-run values with generated UTC identity", async () => {
@@ -368,7 +426,13 @@ describe("asset API validation", () => {
     expect(createResponse.status).toBe(201);
     expect(listed).toHaveLength(1);
     expect(updateResponse.status).toBe(200);
-    expect((await updateResponse.json()).asset.notes).toBe("Check irrigation pumps");
+    const updated = (await updateResponse.json()).asset;
+    expect(updated).toMatchObject({
+      location: { lat: 36.7378, lon: -119.7871 },
+      notes: "Check irrigation pumps",
+    });
+    expect(updated).not.toHaveProperty("latitude");
+    expect(updated).not.toHaveProperty("longitude");
   });
 
   it("returns 400 for an invalid asset payload", async () => {
