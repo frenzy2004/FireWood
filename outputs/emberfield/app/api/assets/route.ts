@@ -6,11 +6,16 @@ import {
   assetCreateSchema,
   type D1DatabaseLike,
 } from "@/lib/server/repository";
+import { rejectUnsafeLocalRequest } from "@/lib/server/local-request";
 
 const repository = () =>
   new AssetRepository(getD1Database() as unknown as D1DatabaseLike);
 
-export async function GET(): Promise<Response> {
+export async function GET(
+  request = new Request("http://localhost/api/assets"),
+): Promise<Response> {
+  const rejected = rejectUnsafeLocalRequest(request);
+  if (rejected) return rejected;
   try {
     return Response.json(
       { assets: await repository().listAssets() },
@@ -22,6 +27,8 @@ export async function GET(): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const rejected = rejectUnsafeLocalRequest(request, { requireJson: true });
+  if (rejected) return rejected;
   try {
     const payload: unknown = await request.json();
     const parsed = assetCreateSchema.safeParse(payload);

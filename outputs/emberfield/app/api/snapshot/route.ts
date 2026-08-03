@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { boundingBox } from "@/lib/domain/geometry";
 import type { Asset } from "@/lib/domain/types";
 import { DEMO_ASSET, DEMO_BBOX } from "@/lib/fixtures/demo";
+import { rejectUnsafeLocalRequest } from "@/lib/server/local-request";
 import { buildSnapshot } from "@/lib/server/snapshot";
 
 const finiteParameter = (value: string | null, fallback: number) => {
@@ -12,6 +13,8 @@ const finiteParameter = (value: string | null, fallback: number) => {
 };
 
 export async function GET(request: Request): Promise<Response> {
+  const rejected = rejectUnsafeLocalRequest(request);
+  if (rejected) return rejected;
   const url = new URL(request.url);
   const requestedMode = url.searchParams.get("mode");
   if (requestedMode !== null && requestedMode !== "live" && requestedMode !== "fixture") {

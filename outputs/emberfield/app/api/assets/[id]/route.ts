@@ -7,6 +7,7 @@ import {
   type D1DatabaseLike,
   RepositoryNotFoundError,
 } from "@/lib/server/repository";
+import { rejectUnsafeLocalRequest } from "@/lib/server/local-request";
 
 const repository = () =>
   new AssetRepository(getD1Database() as unknown as D1DatabaseLike);
@@ -19,6 +20,8 @@ export async function PATCH(
   request: Request,
   context: RouteContext,
 ): Promise<Response> {
+  const rejected = rejectUnsafeLocalRequest(request, { requireJson: true });
+  if (rejected) return rejected;
   try {
     const { id } = await context.params;
     if (!id || id.length > 128) {
