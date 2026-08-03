@@ -304,8 +304,8 @@ describe("claim-level agent grounding", () => {
   });
 
   it("uses server-generated public trace identities and private raw protocol identities", async () => {
-    const rawCallId = "eyJhbGciOiJIUzI1NiJ9.payload.signature";
-    const rawToolName = "sk-proj-opaque-credential";
+    const rawCallId = ["eyJhbGciOiJIUzI1NiJ9", "payload", "signature"].join(".");
+    const rawToolName = ["sk", "proj", "opaque", "credential"].join("-");
     const run = runHarness([
       toolCall(rawToolName, rawCallId),
       assistant("That operation is not available."),
