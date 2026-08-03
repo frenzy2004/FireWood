@@ -1,14 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import dynamic from "next/dynamic";
+import { useCallback, useMemo, useRef, useState } from "react";
+
 import { ActivityInspector } from "./components/ActivityInspector";
 import { AgentPanel } from "./components/AgentPanel";
 import { AssetRail } from "./components/AssetRail";
-import { MapCanvas } from "./components/MapCanvas";
 import { SetupPanel } from "./components/SetupPanel";
-import { TimelineDock } from "./components/TimelineDock";
+import { applyReplayState, FULL_REPLAY_STATE, type ReplayState, TimelineDock } from "./components/TimelineDock";
 import { TopBar } from "./components/TopBar";
 import { type DashboardSnapshot, type SavedAsset, useDashboard } from "./hooks/use-dashboard";
+
+const MapCanvas = dynamic(
+  () => import("./components/MapCanvas").then((module) => module.MapCanvas),
+  { ssr: false, loading: () => <section className="map-canvas panel map-loading" aria-label="Evidence map"><div className="map-grid" /><p>Preparing local evidence map</p></section> },
+);
 
 const tabs = ["Assets", "Activity", "Timeline", "Gemma"] as const;
 type Tab = (typeof tabs)[number];
@@ -17,28 +23,52 @@ export function Dashboard({ initialSnapshot }: { initialSnapshot?: DashboardSnap
   const dashboard = useDashboard(initialSnapshot);
   const [activeTab, setActiveTab] = useState<Tab>("Activity");
   const [setupOpen, setSetupOpen] = useState(false);
-  const saveAsset = (asset: SavedAsset) => { dashboard.setAssets((assets) => [asset, ...assets.filter((item) => item.id !== asset.id)]); dashboard.selectAsset(asset); setSetupOpen(false); };
+  const [replay, setReplay] = useState<ReplayState>(FULL_REPLAY_STATE);
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const saveAsset = (asset: SavedAsset) => {
+    dashboard.setAssets((assets) => [asset, ...assets.filter((item) => item.id !== asset.id)]);
+    dashboard.selectAsset(asset);
+    setSetupOpen(false);
+  };
   const snapshot = dashboard.snapshot;
+  const replaySnapshot = useMemo(() => applyReplayState(snapshot, replay), [replay, snapshot]);
   const limited = snapshot?.groups.some((group) => group.assessment.dataQuality === "limited" || group.assessment.completeness !== "complete");
+  const updateReplay = useCallback((state: ReplayState) => setReplay(state), []);
+  const activateTab = (index: number, focus = false) => {
+    const normalized = (index + tabs.length) % tabs.length;
+    setActiveTab(tabs[normalized]);
+    if (focus) tabRefs.current[normalized]?.focus();
+  };
+  const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (event.key === "ArrowRight") { event.preventDefault(); activateTab(index + 1, true); }
+    else if (event.key === "ArrowLeft") { event.preventDefault(); activateTab(index - 1, true); }
+    else if (event.key === "Home") { event.preventDefault(); activateTab(0, true); }
+    else if (event.key === "End") { event.preventDefault(); activateTab(tabs.length - 1, true); }
+  };
+  const assetRail = <AssetRail assets={dashboard.assets} selectedId={dashboard.selectedAsset.id} summaries={dashboard.summaries} onSelect={dashboard.selectAsset} onAdd={() => setSetupOpen(true)} storageMessage={dashboard.assetStorageError} />;
+  const inspector = <ActivityInspector snapshot={replaySnapshot} selectedGroupId={dashboard.selectedGroupId} alerts={dashboard.alerts} replayCutoff={replay.cutoff} />;
+  const timeline = <TimelineDock snapshot={snapshot} onSelect={dashboard.setSelectedGroupId} onReplayChange={updateReplay} />;
+  const agent = <AgentPanel snapshot={snapshot} selectedAssetId={dashboard.selectedAsset.id} ollamaStatus={dashboard.health?.integrations.ollama.status} />;
+
   return <main className="console-shell">
-    <TopBar mode={dashboard.mode} loading={dashboard.loading} onModeChange={dashboard.changeMode} onRefresh={() => void dashboard.refresh()} />
-    {dashboard.error && <div className="console-error" role="alert"><strong>Live evidence needs attention.</strong> {dashboard.error} Fixture data remains available as a clearly labeled local demo.</div>}
+    <TopBar mode={dashboard.mode} snapshotMode={snapshot?.mode} health={dashboard.health} healthError={dashboard.healthError} lastRefreshAt={dashboard.lastRefreshAt} loading={dashboard.loading} onModeChange={dashboard.changeMode} onRefresh={() => void dashboard.refresh()} />
+    {dashboard.error ? <div className="console-error" role="alert"><strong>{dashboard.error.attemptedMode === "live" ? "Live evidence needs attention." : "Fixture evidence needs attention."}</strong> {dashboard.error.message} {dashboard.error.retainedMode ? `Showing the previous ${dashboard.error.retainedMode} snapshot${dashboard.error.retainedAssetName ? ` for ${dashboard.error.retainedAssetName}` : ""}.` : "No prior snapshot is being shown."}</div> : null}
     <div className="workspace">
-      <AssetRail assets={dashboard.assets} selectedId={dashboard.selectedAsset.id} onSelect={dashboard.selectAsset} onAdd={() => setSetupOpen(true)} storageMessage={dashboard.assetStorageError} />
-      <div className="map-column"><MapCanvas snapshot={snapshot} selectedGroupId={dashboard.selectedGroupId} onSelect={dashboard.setSelectedGroupId} /><TimelineDock snapshot={snapshot} onSelect={dashboard.setSelectedGroupId} /></div>
-      <ActivityInspector snapshot={snapshot} selectedGroupId={dashboard.selectedGroupId} alerts={dashboard.alerts} />
+      {assetRail}
+      <div className="map-column"><MapCanvas snapshot={replaySnapshot} selectedGroupId={dashboard.selectedGroupId} onSelect={dashboard.setSelectedGroupId} />{timeline}</div>
+      {inspector}
     </div>
-    <div className="agent-dock"><AgentPanel snapshot={snapshot} /></div>
-    <div className="mobile-tabs" role="tablist" aria-label="Console sections">{tabs.map((tab) => <button key={tab} role="tab" aria-selected={activeTab === tab} aria-controls={`panel-${tab.toLowerCase()}`} id={`tab-${tab.toLowerCase()}`} onClick={() => setActiveTab(tab)}>{tab}</button>)}</div>
-    <div className="mobile-panel" role="tabpanel" aria-label={activeTab} id={`panel-${activeTab.toLowerCase()}`} aria-labelledby={`tab-${activeTab.toLowerCase()}`}>
-      {activeTab === "Assets" && <AssetRail assets={dashboard.assets} selectedId={dashboard.selectedAsset.id} onSelect={dashboard.selectAsset} onAdd={() => setSetupOpen(true)} storageMessage={dashboard.assetStorageError} />}
-      {activeTab === "Activity" && <ActivityInspector snapshot={snapshot} selectedGroupId={dashboard.selectedGroupId} alerts={dashboard.alerts} />}
-      {activeTab === "Timeline" && <TimelineDock snapshot={snapshot} onSelect={dashboard.setSelectedGroupId} />}
-      {activeTab === "Gemma" && <AgentPanel snapshot={snapshot} />}
-    </div>
-    <footer className="safety-footer"><strong>Evidence limits</strong><span>A FIRMS point is a satellite-detected heat anomaly, not a confirmed wildfire. It is the center of an approximately 375-meter VIIRS pixel. Change in detected activity is not confirmed fire spread. Absence of detections does not mean absence of fire. This is informational context, not an evacuation or emergency-warning tool. Follow official local guidance.</span></footer>
-    {limited && <span className="sr-only">Limited data is present in this evidence view.</span>}
-    {setupOpen && <SetupPanel onClose={() => setSetupOpen(false)} onSaved={saveAsset} />}
+    <div className="agent-dock">{agent}</div>
+    <div className="mobile-tabs" role="tablist" aria-label="Console sections">{tabs.map((tab, index) => <button ref={(element) => { tabRefs.current[index] = element; }} key={tab} role="tab" aria-selected={activeTab === tab} aria-controls={`panel-${tab.toLowerCase()}`} id={`tab-${tab.toLowerCase()}`} tabIndex={activeTab === tab ? 0 : -1} onKeyDown={(event) => handleTabKeyDown(event, index)} onClick={() => activateTab(index)}>{tab}</button>)}</div>
+    {tabs.map((tab) => <div className="mobile-panel" role="tabpanel" key={tab} hidden={activeTab !== tab} aria-label={tab} id={`panel-${tab.toLowerCase()}`} aria-labelledby={`tab-${tab.toLowerCase()}`}>
+      {activeTab === tab && tab === "Assets" ? assetRail : null}
+      {activeTab === tab && tab === "Activity" ? inspector : null}
+      {activeTab === tab && tab === "Timeline" ? timeline : null}
+      {activeTab === tab && tab === "Gemma" ? agent : null}
+    </div>)}
+    <footer className="safety-footer"><strong>Evidence limits</strong><span>Informational planning view only. Not for evacuation, dispatch, firefighting, or protection-of-life or property decisions. Data may be delayed, incomplete, or inaccurate. Follow local emergency officials and NWS alerts. A FIRMS point is a satellite-detected heat anomaly, not a confirmed wildfire. It is the center of an approximately 375-meter VIIRS pixel. Points do not measure burning acreage. AirNow readings are preliminary. Change in detected activity is not confirmed fire spread. Absence of detections does not mean absence of fire. This is not an evacuation or emergency-warning tool.</span></footer>
+    {limited ? <span className="sr-only">Limited data is present in this evidence view.</span> : null}
+    {setupOpen ? <SetupPanel onClose={() => setSetupOpen(false)} onSaved={saveAsset} /> : null}
   </main>;
 }
 

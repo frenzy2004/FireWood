@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { deriveAlerts } from "@/lib/domain/alerts";
+import type { AlertEvaluation, AlertType } from "@/lib/domain/types";
+
 export type DataMode = "fixture" | "live";
 
 export type SourceState = {
@@ -9,25 +12,88 @@ export type SourceState = {
   status: "ok" | "partial" | "missing-key" | "error" | "not-requested";
   source: string;
   sourceUrl: string | null;
+  sourceUrls?: string[];
+  coverage?: { succeeded: number; failed: number; total: number };
   fetchedAt: string;
   observedAt: string | null;
   error?: { code: string; message: string };
+};
+
+export type DashboardDetection = {
+  id?: string;
+  source?: string;
+  lat: number;
+  lon: number;
+  acquiredAt: string;
+  satellite: string;
+  confidence: string;
+  frpMw: number | null;
 };
 
 export type DashboardSnapshot = {
   mode: DataMode;
   generatedAt: string;
   asset: { id: string; name: string; location: { lat: number; lon: number }; radiusKm: number };
-  detections: Array<{ id?: string; lat: number; lon: number; acquiredAt: string; satellite: string; confidence: string; frpMw: number | null }>;
+  detections: DashboardDetection[];
   groups: Array<{
-    cluster: { id: string; centroid: { lat: number; lon: number }; detectionCount: number; latestAcquiredAt: string; satellites: string[]; maxConfidence?: string; maxFrpMw: number | null };
-    weather: { windSpeedMps: number | null; windFromDeg: number | null; relativeHumidityPct: number | null } | null;
-    assessment: { score: number | null; scoreRange: { low: number; high: number } | null; band: string; contributions: Array<{ code: string; label: string; weightedValue: number; available: boolean }>; reasons: Array<{ code: string; label: string; contribution: number }>; missingInputs: string[]; completeness: string; dataQuality: string; dataConfidence: number; canAutomateAlerts?: boolean };
-    officialMatch: { incident: { name: string; percentContained: number | null; updatedAt: string | null }; method: string; distanceKm: number } | null;
+    cluster: {
+      id: string;
+      centroid: { lat: number; lon: number };
+      detections: DashboardDetection[];
+      memberFingerprints: string[];
+      detectionCount: number;
+      firstAcquiredAt: string;
+      latestAcquiredAt: string;
+      satellites: string[];
+      maxConfidence?: string;
+      maxFrpMw: number | null;
+    };
+    weather: {
+      windSpeedMps: number | null;
+      windFromDeg: number | null;
+      relativeHumidityPct: number | null;
+      quality?: string;
+      observedAt?: string;
+    } | null;
+    assessment: {
+      score: number | null;
+      scoreRange: { low: number; high: number } | null;
+      band: string;
+      contributions: Array<{
+        code: string;
+        label: string;
+        weight: number;
+        normalizedValue: number | null;
+        quality: number;
+        weightedValue: number;
+        available: boolean;
+      }>;
+      reasons: Array<{ code: string; label: string; contribution: number }>;
+      missingInputs: string[];
+      completeness: "complete" | "partial" | "insufficient" | string;
+      dataQuality: "good" | "adequate" | "limited" | string;
+      dataConfidence: number;
+      canAutomateAlerts?: boolean;
+    };
+    officialMatch: {
+      incident: {
+        id?: string;
+        name: string;
+        percentContained: number | null;
+        updatedAt: string | null;
+      };
+      method: string;
+      distanceKm: number;
+    } | null;
   }>;
   incidents: Array<{ id: string; name: string; location: { lat: number; lon: number } }>;
   perimeters: Array<{ id: string; geometry: unknown }>;
-  air: { aqi: number | null; pm25UgM3: number | null } | null;
+  air: {
+    aqi: number | null;
+    pm25UgM3: number | null;
+    quality?: string;
+    observedAt?: string;
+  } | null;
   sources: Record<string, SourceState>;
 };
 
@@ -40,9 +106,16 @@ export type SavedAsset = {
   notes?: string | null;
 };
 
+export type IntegrationStatus = "ready" | "missing-key" | "offline" | "error";
+
+export type HealthPayload = {
+  status: "ok" | "degraded";
+  integrations: Record<"firms" | "airnow" | "ollama", { configured: boolean; status: IntegrationStatus }>;
+};
+
 export type ConsoleAlert = {
   dedupeKey: string;
-  type: "new-cluster" | "new-satellite" | "score-increase";
+  type: AlertType;
   title: string;
   acquiredAt: string;
   distanceKm: number;
@@ -51,34 +124,101 @@ export type ConsoleAlert = {
   reason: string;
 };
 
-const distanceKm = (a: { lat: number; lon: number }, b: { lat: number; lon: number }) => {
+export type AssetSummary = {
+  score: number | null;
+  trend: "up" | "down" | "steady" | "new" | "unknown";
+  completeness: "complete" | "partial" | "insufficient" | "no-activity" | string;
+};
+
+export type DashboardErrorNotice = {
+  attemptedMode: DataMode;
+  message: string;
+  retainedMode: DataMode | null;
+  retainedAssetName: string | null;
+};
+
+const EARTH_RADIUS_KM = 6_371.0088;
+
+export const distanceBetweenKm = (a: { lat: number; lon: number }, b: { lat: number; lon: number }) => {
   const radians = (value: number) => (value * Math.PI) / 180;
   const deltaLat = radians(b.lat - a.lat);
   const deltaLon = radians(b.lon - a.lon);
   const latitudeA = radians(a.lat);
   const latitudeB = radians(b.lat);
   const haversine = Math.sin(deltaLat / 2) ** 2 + Math.cos(latitudeA) * Math.cos(latitudeB) * Math.sin(deltaLon / 2) ** 2;
-  return 2 * 6_371.0088 * Math.asin(Math.min(1, Math.sqrt(haversine)));
+  return 2 * EARTH_RADIUS_KM * Math.asin(Math.min(1, Math.sqrt(haversine)));
 };
 
-export function deriveConsoleAlerts(previous: DashboardSnapshot | undefined, current: DashboardSnapshot | undefined): ConsoleAlert[] {
+const alertTitle: Record<AlertType, string> = {
+  "new-cluster": "New activity group",
+  "new-satellite": "New satellite joined",
+  "activity-resumed": "Detected activity resumed",
+  "score-increase": "Context score increased",
+  "official-incident": "Official incident associated",
+};
+
+const alertReason: Record<AlertType, string> = {
+  "new-cluster": "A new detected activity group appeared inside the selected asset radius.",
+  "new-satellite": "A new satellite contributed a detection to this activity group.",
+  "activity-resumed": "The group received a new detection after at least six quiet hours.",
+  "score-increase": "The deterministic context score increased by at least 10 points.",
+  "official-incident": "An official incident became associated by perimeter or bounded proximity.",
+};
+
+function evaluationFor(
+  snapshot: DashboardSnapshot,
+  group: DashboardSnapshot["groups"][number],
+): AlertEvaluation {
+  const distanceKm = distanceBetweenKm(snapshot.asset.location, group.cluster.centroid);
+  return {
+    assetId: snapshot.asset.id,
+    clusterId: group.cluster.id,
+    evaluatedAt: snapshot.generatedAt,
+    inRadius: distanceKm <= snapshot.asset.radiusKm,
+    satellites: group.cluster.satellites,
+    latestActivityAt: group.cluster.latestAcquiredAt,
+    score: group.assessment.score,
+    dataConfidence: group.assessment.canAutomateAlerts === false
+      ? Math.min(59, group.assessment.dataConfidence)
+      : group.assessment.dataConfidence,
+    matchedOfficialIncidentId: group.officialMatch?.incident.id ?? null,
+  };
+}
+
+export function deriveConsoleAlerts(
+  previous: DashboardSnapshot | undefined,
+  current: DashboardSnapshot | undefined,
+): ConsoleAlert[] {
   if (!current) return [];
-  const previousGroups = new Map(previous?.groups.map((group) => [group.cluster.id, group]) ?? []);
-  const alerts = current.groups.flatMap((group) => {
-    if (group.assessment.canAutomateAlerts === false) return [];
+  const comparablePrevious = previous?.asset.id === current.asset.id && previous.mode === current.mode
+    ? previous
+    : undefined;
+  const previousGroups = new Map(comparablePrevious?.groups.map((group) => [group.cluster.id, group]) ?? []);
+  const alerts: ConsoleAlert[] = [];
+
+  for (const group of current.groups) {
+    const distanceKm = distanceBetweenKm(current.asset.location, group.cluster.centroid);
+    if (distanceKm > current.asset.radiusKm) continue;
     const prior = previousGroups.get(group.cluster.id);
-    const shared = {
-      acquiredAt: group.cluster.latestAcquiredAt,
-      distanceKm: distanceKm(current.asset.location, group.cluster.centroid),
-      confidence: group.cluster.maxConfidence ?? "not reported",
-      source: `${current.sources.firms?.source ?? "NASA FIRMS"}: ${group.cluster.satellites.join(", ")}`,
-    };
-    if (!prior) return [{ dedupeKey: `${current.asset.id}:${group.cluster.id}:new-cluster`, type: "new-cluster" as const, title: "New activity group", reason: "New detected activity group inside the asset radius.", ...shared }];
-    const previousSatellites = new Set(prior.cluster.satellites);
-    if (group.cluster.satellites.some((satellite) => !previousSatellites.has(satellite))) return [{ dedupeKey: `${current.asset.id}:${group.cluster.id}:new-satellite`, type: "new-satellite" as const, title: "New satellite confirmation", reason: "A new satellite contributed detected activity to this group.", ...shared }];
-    if (prior.assessment.score !== null && group.assessment.score !== null && group.assessment.score - prior.assessment.score >= 10) return [{ dedupeKey: `${current.asset.id}:${group.cluster.id}:score-increase`, type: "score-increase" as const, title: "Context score increased", reason: "The deterministic context score increased by at least 10 points.", ...shared }];
-    return [];
-  });
+    const domainAlerts = deriveAlerts(
+      prior && comparablePrevious ? evaluationFor(comparablePrevious, prior) : null,
+      evaluationFor(current, group),
+    );
+    const source = `${current.sources.firms?.source ?? "NASA FIRMS"}: ${group.cluster.satellites.join(", ") || "satellite not reported"}`;
+    for (const alert of domainAlerts) {
+      alerts.push({
+        dedupeKey: alert.dedupeKey,
+        type: alert.type,
+        title: alertTitle[alert.type],
+        acquiredAt: group.cluster.latestAcquiredAt,
+        distanceKm,
+        confidence: group.cluster.maxConfidence ?? "not reported",
+        source,
+        reason: alertReason[alert.type],
+      });
+    }
+  }
+
   return [...new Map(alerts.map((alert) => [alert.dedupeKey, alert])).values()];
 }
 
@@ -101,56 +241,183 @@ function snapshotUrl(asset: SavedAsset, mode: DataMode) {
   return `/api/snapshot?${query}`;
 }
 
+const snapshotKey = (assetId: string, mode: DataMode) => `${assetId}:${mode}`;
+
+function summarizeSnapshot(snapshot: DashboardSnapshot, previous?: AssetSummary): AssetSummary {
+  const scores = snapshot.groups
+    .map((group) => group.assessment.score)
+    .filter((score): score is number => score !== null);
+  const score = scores.length > 0 ? Math.max(...scores) : null;
+  const completenessOrder = { complete: 0, partial: 1, insufficient: 2 } as const;
+  const completeness = snapshot.groups.length === 0
+    ? "no-activity"
+    : snapshot.groups.reduce<string>((worst, group) => {
+      const candidate = group.assessment.completeness;
+      const worstRank = completenessOrder[worst as keyof typeof completenessOrder] ?? 0;
+      const candidateRank = completenessOrder[candidate as keyof typeof completenessOrder] ?? 0;
+      return candidateRank > worstRank ? candidate : worst;
+    }, "complete");
+  const trend = previous?.score === undefined || previous.score === null || score === null
+    ? (previous ? "unknown" : "new")
+    : score > previous.score
+      ? "up"
+      : score < previous.score
+        ? "down"
+        : "steady";
+  return { score, trend, completeness };
+}
+
+function isHealthPayload(value: unknown): value is HealthPayload {
+  if (!value || typeof value !== "object") return false;
+  const integrations = (value as { integrations?: unknown }).integrations;
+  if (!integrations || typeof integrations !== "object") return false;
+  return ["firms", "airnow", "ollama"].every((key) => {
+    const integration = (integrations as Record<string, unknown>)[key];
+    return Boolean(integration && typeof integration === "object" && typeof (integration as { status?: unknown }).status === "string");
+  });
+}
+
+function normalizeSnapshotIdentity(payload: DashboardSnapshot, asset: SavedAsset): DashboardSnapshot {
+  return {
+    ...payload,
+    asset: {
+      ...payload.asset,
+      id: asset.id,
+      name: asset.name,
+      location: asset.location,
+      radiusKm: asset.radiusKm,
+    },
+  };
+}
+
 export function useDashboard(initialSnapshot?: DashboardSnapshot) {
   const requestedInitialSnapshot = useRef(false);
-  const previousSnapshot = useRef<DashboardSnapshot | undefined>(initialSnapshot);
+  const snapshotRequest = useRef<{ sequence: number; controller: AbortController } | null>(null);
+  const healthRequest = useRef<AbortController | null>(null);
+  const snapshotRef = useRef<DashboardSnapshot | undefined>(initialSnapshot);
+  const initialKey = initialSnapshot ? snapshotKey(initialSnapshot.asset.id, initialSnapshot.mode) : null;
+  const initialAlerts = initialSnapshot ? deriveConsoleAlerts(undefined, initialSnapshot) : [];
+  const previousSnapshots = useRef(new Map<string, DashboardSnapshot>(initialSnapshot && initialKey ? [[initialKey, initialSnapshot]] : []));
+  const alertHistories = useRef(new Map<string, Map<string, ConsoleAlert>>(initialKey ? [[initialKey, new Map(initialAlerts.map((alert) => [alert.dedupeKey, alert]))]] : []));
+
   const [mode, setMode] = useState<DataMode>(initialSnapshot?.mode ?? "fixture");
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | undefined>(initialSnapshot);
   const [assets, setAssets] = useState<SavedAsset[]>([initialSnapshot?.asset ?? defaultAsset]);
   const [selectedAssetId, setSelectedAssetId] = useState(initialSnapshot?.asset.id ?? defaultAsset.id);
   const [selectedGroupId, setSelectedGroupId] = useState(initialSnapshot?.groups[0]?.cluster.id ?? "");
   const [loading, setLoading] = useState(!initialSnapshot);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<DashboardErrorNotice | null>(null);
   const [assetStorageError, setAssetStorageError] = useState<string | null>(null);
-  const [alerts, setAlerts] = useState<ConsoleAlert[]>(() => deriveConsoleAlerts(undefined, initialSnapshot));
+  const [health, setHealth] = useState<HealthPayload | undefined>();
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const [lastRefreshAt, setLastRefreshAt] = useState(initialSnapshot?.generatedAt ?? null);
+  const [summaries, setSummaries] = useState<Record<string, AssetSummary>>(() => initialSnapshot
+    ? { [initialSnapshot.asset.id]: summarizeSnapshot(initialSnapshot) }
+    : {});
+  const [alerts, setAlerts] = useState<ConsoleAlert[]>(initialAlerts);
+
   const selectedAsset = useMemo(
     () => assets.find((asset) => asset.id === selectedAssetId) ?? assets[0] ?? defaultAsset,
     [assets, selectedAssetId],
   );
 
-  const loadSnapshot = useCallback(async (asset: SavedAsset, nextMode: DataMode) => {
-    setLoading(true);
-    setError(null);
+  const loadHealth = useCallback(async () => {
+    healthRequest.current?.abort();
+    const controller = new AbortController();
+    healthRequest.current = controller;
     try {
-      const response = await fetch(snapshotUrl(asset, nextMode));
-      const payload = await response.json().catch(() => null) as DashboardSnapshot | { error?: string } | null;
-      if (!response.ok || !payload || !("asset" in payload)) {
-        throw new Error((payload && "error" in payload && payload.error) || "Snapshot data is unavailable right now.");
-      }
-      setSnapshot(payload);
-      setAlerts(deriveConsoleAlerts(previousSnapshot.current, payload));
-      previousSnapshot.current = payload;
-      setSelectedGroupId(payload.groups[0]?.cluster.id ?? "");
+      const response = await fetch("/api/health", { signal: controller.signal });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok || !isHealthPayload(payload)) throw new Error("Integration health is unavailable.");
+      setHealth(payload);
+      setHealthError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Snapshot data is unavailable right now.");
-    } finally {
-      setLoading(false);
+      if (cause instanceof DOMException && cause.name === "AbortError") return;
+      setHealthError("Integration health is unavailable.");
     }
   }, []);
 
-  const refresh = useCallback((nextMode = mode) => loadSnapshot(selectedAsset, nextMode), [loadSnapshot, mode, selectedAsset]);
+  const loadSnapshot = useCallback(async (asset: SavedAsset, nextMode: DataMode) => {
+    snapshotRequest.current?.controller.abort();
+    const controller = new AbortController();
+    const sequence = (snapshotRequest.current?.sequence ?? 0) + 1;
+    snapshotRequest.current = { sequence, controller };
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(snapshotUrl(asset, nextMode), { signal: controller.signal });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok || !payload || typeof payload !== "object" || !("asset" in payload)) {
+        const message = payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string"
+          ? payload.error
+          : "Snapshot data is unavailable right now.";
+        throw new Error(message);
+      }
+      if (snapshotRequest.current.sequence !== sequence) return;
+      const normalized = normalizeSnapshotIdentity(payload as DashboardSnapshot, asset);
+      const key = snapshotKey(asset.id, normalized.mode);
+      const prior = previousSnapshots.current.get(key);
+      const events = deriveConsoleAlerts(prior, normalized);
+      const history = alertHistories.current.get(key) ?? new Map<string, ConsoleAlert>();
+      for (const event of events) history.set(event.dedupeKey, event);
+      alertHistories.current.set(key, history);
+      previousSnapshots.current.set(key, normalized);
+      snapshotRef.current = normalized;
+      setSnapshot(normalized);
+      setMode(normalized.mode);
+      setSelectedAssetId(asset.id);
+      setAlerts([...history.values()].sort((left, right) => Date.parse(right.acquiredAt) - Date.parse(left.acquiredAt)));
+      setSelectedGroupId(normalized.groups[0]?.cluster.id ?? "");
+      setLastRefreshAt(normalized.generatedAt);
+      setSummaries((current) => ({
+        ...current,
+        [asset.id]: summarizeSnapshot(normalized, current[asset.id]),
+      }));
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") return;
+      if (snapshotRequest.current?.sequence !== sequence) return;
+      const retained = snapshotRef.current;
+      setError({
+        attemptedMode: nextMode,
+        message: cause instanceof Error ? cause.message : "Snapshot data is unavailable right now.",
+        retainedMode: retained?.mode ?? null,
+        retainedAssetName: retained?.asset.name ?? null,
+      });
+    } finally {
+      if (snapshotRequest.current?.sequence === sequence) setLoading(false);
+    }
+  }, []);
+
+  const refresh = useCallback(async (nextMode = mode) => {
+    await Promise.all([loadSnapshot(selectedAsset, nextMode), loadHealth()]);
+  }, [loadHealth, loadSnapshot, mode, selectedAsset]);
 
   useEffect(() => {
-    void fetch("/api/assets")
+    const controller = new AbortController();
+    void fetch("/api/assets", { signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error("Saved asset storage is unavailable.");
         return response.json();
       })
       .then((payload: { assets?: SavedAsset[] } | null) => {
-        if (payload?.assets?.length) setAssets([initialSnapshot?.asset ?? defaultAsset, ...payload.assets]);
+        if (!payload?.assets?.length) return;
+        const first = initialSnapshot?.asset ?? defaultAsset;
+        setAssets([first, ...payload.assets.filter((asset) => asset.id !== first.id)]);
       })
-      .catch(() => setAssetStorageError("Saved asset storage is unavailable. You can keep exploring the fixture ranch and retry setup after local storage is initialized."));
+      .catch((cause) => {
+        if (cause instanceof DOMException && cause.name === "AbortError") return;
+        setAssetStorageError("Saved asset storage is unavailable. You can keep exploring the fixture ranch and retry setup after local storage is initialized.");
+      });
+    return () => controller.abort();
   }, [initialSnapshot?.asset]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void loadHealth(); }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      healthRequest.current?.abort();
+    };
+  }, [loadHealth]);
 
   useEffect(() => {
     if (initialSnapshot || requestedInitialSnapshot.current) return;
@@ -159,21 +426,55 @@ export function useDashboard(initialSnapshot?: DashboardSnapshot) {
     return () => window.clearTimeout(timer);
   }, [initialSnapshot, refresh]);
 
+  useEffect(() => () => snapshotRequest.current?.controller.abort(), []);
+
   const selectAsset = (asset: SavedAsset) => {
     setSelectedAssetId(asset.id);
     setSelectedGroupId("");
+    if (snapshotRef.current?.asset.id !== asset.id) {
+      snapshotRef.current = undefined;
+      setSnapshot(undefined);
+    }
+    const key = snapshotKey(asset.id, mode);
+    setAlerts([...(alertHistories.current.get(key)?.values() ?? [])]);
     void loadSnapshot(asset, mode);
   };
 
   const changeMode = (nextMode: DataMode) => {
-    setMode(nextMode);
-    void refresh(nextMode);
+    if (nextMode === mode && snapshotRef.current?.mode === nextMode) return;
+    void Promise.all([loadSnapshot(selectedAsset, nextMode), loadHealth()]);
   };
 
-  return { mode, snapshot, assets, setAssets, selectedAsset, selectAsset, selectedGroupId, setSelectedGroupId, loading, error, assetStorageError, alerts, refresh, changeMode };
+  return {
+    mode,
+    snapshot,
+    assets,
+    setAssets,
+    selectedAsset,
+    selectAsset,
+    selectedGroupId,
+    setSelectedGroupId,
+    loading,
+    error,
+    assetStorageError,
+    alerts,
+    health,
+    healthError,
+    lastRefreshAt,
+    summaries,
+    refresh,
+    changeMode,
+  };
 }
 
 export const formatUtc = (value: string | null | undefined) => {
+  if (!value) return "not available";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "not available";
+  return date.toISOString().replace(".000Z", "Z");
+};
+
+export const formatShortUtc = (value: string | null | undefined) => {
   if (!value) return "not available";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "not available";
