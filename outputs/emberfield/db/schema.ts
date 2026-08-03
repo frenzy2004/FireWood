@@ -103,6 +103,27 @@ export const sourceSnapshots = sqliteTable("source_snapshots", {
   payloadJson: text("payload_json").notNull(),
 });
 
+export const snapshotRuns = sqliteTable(
+  "snapshot_runs",
+  {
+    id: text("id").primaryKey(),
+    assetId: text("asset_id").notNull().references(() => assets.id, { onDelete: "cascade" }),
+    mode: text("mode").notNull(),
+    generatedAt: text("generated_at").notNull(),
+    snapshotJson: text("snapshot_json").notNull(),
+    alertsJson: text("alerts_json").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("idx_snapshot_runs_asset_mode_generated_at").on(
+      table.assetId,
+      table.mode,
+      table.generatedAt,
+    ),
+  ],
+);
+
 export const agentRuns = sqliteTable("agent_runs", {
   id: text("id").primaryKey(),
   assetId: text("asset_id").notNull().references(() => assets.id, { onDelete: "cascade" }),

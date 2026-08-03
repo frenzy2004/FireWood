@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("cloudflare:workers", () => ({ env: {} }));
+const workerEnvironment = vi.hoisted(() => ({ DB: undefined as unknown }));
+vi.mock("cloudflare:workers", () => ({ env: workerEnvironment }));
 
-import { GET as getSnapshot } from "../app/api/snapshot/route";
+import { POST as postSnapshot } from "../app/api/snapshot/route";
 import { DEMO_ASSET, DEMO_BBOX } from "../lib/fixtures/demo";
 import {
   CACHE_TTLS,
@@ -235,6 +236,148 @@ describe("source-aware cache", () => {
 });
 
 describe("snapshot composition", () => {
+  it("enforces the exact asset radius before clustering", async () => {
+    const snapshot = await buildSnapshot(
+      { asset: DEMO_ASSET, bbox: DEMO_BBOX, mode: "live" },
+      {
+        now: () => now,
+        config: {
+          firms: { mapKey: "configured" },
+          airnow: { apiKey: "" },
+          ollama: { baseUrl: "http://127.0.0.1:11434", model: "gemma4:12b" },
+        },
+        fetchFirms: async () => ({
+          ...firmsPayload,
+          detections: [
+            firmsPayload.detections[0],
+            {
+              ...firmsPayload.detections[1],
+              id: "outside-circle",
+              fingerprint: "outside-circle",
+              lat: DEMO_ASSET.location.lat + 1,
+              lon: DEMO_ASSET.location.lon,
+            },
+          ],
+        }),
+        fetchWeather: async () => weatherPayload,
+        fetchAir: async () => ({
+          mode: "live",
+          status: "missing-key",
+          source: "AirNow",
+          fetchedAt: now.toISOString(),
+          observedAt: null,
+          observations: [],
+          air: null,
+        }),
+        fetchWfigs: async () => ({ ...wfigsPayload, incidents: [], perimeters: [] }),
+      },
+    );
+
+    expect(snapshot.detections.map(({ id }) => id)).toEqual(["first"]);
+    expect(snapshot.groups).toHaveLength(1);
+  });
+
+  it("bounds NWS work to four concurrent cluster lookups", async () => {
+    let active = 0;
+    let maximumActive = 0;
+    const detections = Array.from({ length: 8 }, (_, index) => ({
+      ...firmsPayload.detections[0],
+      id: `weather-${index}`,
+      fingerprint: `weather-${index}`,
+      lat: DEMO_ASSET.location.lat + index * 0.025,
+      lon: DEMO_ASSET.location.lon,
+    }));
+
+    const snapshot = await buildSnapshot(
+      { asset: DEMO_ASSET, bbox: DEMO_BBOX, mode: "live" },
+      {
+        now: () => now,
+        config: {
+          firms: { mapKey: "configured" },
+          airnow: { apiKey: "" },
+          ollama: { baseUrl: "http://127.0.0.1:11434", model: "gemma4:12b" },
+        },
+        fetchFirms: async () => ({ ...firmsPayload, detections }),
+        fetchWeather: async () => {
+          active += 1;
+          maximumActive = Math.max(maximumActive, active);
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          active -= 1;
+          return weatherPayload;
+        },
+        fetchAir: async () => ({
+          mode: "live",
+          status: "missing-key",
+          source: "AirNow",
+          fetchedAt: now.toISOString(),
+          observedAt: null,
+          observations: [],
+          air: null,
+        }),
+        fetchWfigs: async () => ({ ...wfigsPayload, incidents: [], perimeters: [] }),
+      },
+    );
+
+    expect(snapshot.groups).toHaveLength(8);
+    expect(maximumActive).toBeLessThanOrEqual(4);
+  });
+
+  it("caps oversized source results and makes the truncation explicit", async () => {
+    const detections = Array.from({ length: 1_501 }, (_, index) => ({
+      ...firmsPayload.detections[0],
+      id: `detection-${index}`,
+      fingerprint: `detection-${index}`,
+      lat: DEMO_ASSET.location.lat,
+      lon: DEMO_ASSET.location.lon,
+    }));
+    const incidents = Array.from({ length: 251 }, (_, index) => ({
+      ...wfigsPayload.incidents[0],
+      id: `incident-${index}`,
+      irwinId: `irwin-${index}`,
+    }));
+    const perimeters = Array.from({ length: 101 }, (_, index) => ({
+      ...wfigsPayload.perimeters[0],
+      id: `perimeter-${index}`,
+      irwinId: `irwin-${index}`,
+    }));
+
+    const snapshot = await buildSnapshot(
+      { asset: DEMO_ASSET, bbox: DEMO_BBOX, mode: "live" },
+      {
+        now: () => now,
+        config: {
+          firms: { mapKey: "configured" },
+          airnow: { apiKey: "" },
+          ollama: { baseUrl: "http://127.0.0.1:11434", model: "gemma4:12b" },
+        },
+        fetchFirms: async () => ({ ...firmsPayload, detections }),
+        fetchWeather: async () => weatherPayload,
+        fetchAir: async () => ({
+          mode: "live",
+          status: "missing-key",
+          source: "AirNow",
+          fetchedAt: now.toISOString(),
+          observedAt: null,
+          observations: [],
+          air: null,
+        }),
+        fetchWfigs: async () => ({ ...wfigsPayload, incidents, perimeters }),
+      },
+    );
+
+    expect(snapshot.detections).toHaveLength(1_500);
+    expect(snapshot.incidents).toHaveLength(250);
+    expect(snapshot.perimeters).toHaveLength(100);
+    expect(snapshot.limits).toMatchObject({
+      truncated: expect.arrayContaining(["detections", "incidents", "perimeters"]),
+      alertsAutomated: false,
+    });
+    expect(snapshot.sources.firms.status).toBe("partial");
+    expect(snapshot.sources.wfigs.status).toBe("partial");
+    expect(snapshot.groups.every(({ assessment }) => !assessment.canAutomateAlerts))
+      .toBe(true);
+  });
+
   it("propagates refresh and cancellation options to every source adapter", async () => {
     const controller = new AbortController();
     const seen: Array<{ refresh?: boolean; signal?: AbortSignal }> = [];
@@ -497,22 +640,65 @@ describe("snapshot composition", () => {
   });
 });
 
-describe("snapshot route fixture gate", () => {
-  it("serves fixture data only for the explicit fixture query", async () => {
-    const response = await getSnapshot(
-      new Request("http://localhost/api/snapshot?mode=fixture"),
+describe("snapshot POST contract", () => {
+  it("serves the explicit virtual demo identity from a bounded JSON request", async () => {
+    const response = await postSnapshot(
+      new Request("http://localhost/api/snapshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assetId: DEMO_ASSET.id, mode: "fixture" }),
+      }),
     );
     const payload = await response.json();
 
     expect(response.status).toBe(200);
     expect(payload.mode).toBe("fixture");
+    expect(payload.asset.id).toBe(DEMO_ASSET.id);
+    expect(payload.persisted).toBe(false);
+    expect(payload.history24h).toMatchObject({ runs: [], alerts: expect.any(Array) });
   });
 
   it("rejects unsupported modes", async () => {
-    const response = await getSnapshot(
-      new Request("http://localhost/api/snapshot?mode=demo"),
+    const response = await postSnapshot(
+      new Request("http://localhost/api/snapshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assetId: DEMO_ASSET.id, mode: "demo" }),
+      }),
     );
 
     expect(response.status).toBe(400);
+  });
+
+  it("rejects cross-site browser requests before doing snapshot work", async () => {
+    const response = await postSnapshot(
+      new Request("http://localhost/api/snapshot", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: "https://attacker.example",
+          "Sec-Fetch-Site": "cross-site",
+        },
+        body: JSON.stringify({ assetId: DEMO_ASSET.id, mode: "fixture" }),
+      }),
+    );
+
+    expect(response.status).toBe(403);
+  });
+
+  it("rejects snapshot bodies larger than one kilobyte", async () => {
+    const response = await postSnapshot(
+      new Request("http://localhost/api/snapshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assetId: DEMO_ASSET.id,
+          mode: "fixture",
+          padding: "x".repeat(1_024),
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(413);
   });
 });

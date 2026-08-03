@@ -81,7 +81,12 @@ export function deriveAlerts(
   ];
 
   return types.map((type) => {
-    const dedupeKey = `${current.assetId}:${current.clusterId}:${type}`;
+    const dedupeKey = [
+      current.assetId,
+      current.dedupeScope,
+      current.clusterId,
+      type,
+    ].filter(Boolean).join(":");
     const existing = existingAlerts.find((alert) => alert.dedupeKey === dedupeKey);
 
     return {

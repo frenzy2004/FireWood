@@ -9,6 +9,10 @@ import type {
 import { DEMO_ASSET, DEMO_BBOX } from "@/lib/fixtures/demo";
 import { getRuntimeConfig } from "@/lib/server/config";
 import {
+  LocalWorkLimiter,
+  rejectUnsafeLocalRequest,
+} from "@/lib/server/local-request";
+import {
   AssetRepository,
   type D1DatabaseLike,
   type SavedAsset,
@@ -23,6 +27,8 @@ const demoSavedAsset: SavedAsset = {
   updatedAt: "2026-08-03T00:00:00.000Z",
 };
 
+const MAXIMUM_AGENT_REQUEST_BYTES = 16_384;
+
 function virtualDemoRepository(): AgentRepository {
   return {
     listAssets: async () => [demoSavedAsset],
@@ -33,23 +39,52 @@ function virtualDemoRepository(): AgentRepository {
   };
 }
 
+const agentLimiter = new LocalWorkLimiter({ maximumConcurrent: 1 });
+
 export async function POST(request: Request): Promise<Response> {
+  const rejected = rejectUnsafeLocalRequest(request, { requireJson: true });
+  if (rejected) return rejected;
+  const declaredLength = request.headers.get("content-length");
+  if (
+    declaredLength !== null &&
+    Number.isFinite(Number(declaredLength)) &&
+    Number(declaredLength) > MAXIMUM_AGENT_REQUEST_BYTES
+  ) {
+    return Response.json(
+      { error: "Agent request exceeds 16 KB" },
+      { status: 413, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  let release: (() => void) | null = null;
   try {
-    const payload: unknown = await request.json();
+    const bytes = await request.arrayBuffer();
+    if (bytes.byteLength > MAXIMUM_AGENT_REQUEST_BYTES) {
+      return Response.json(
+        { error: "Agent request exceeds 16 KB" },
+        { status: 413, headers: { "Cache-Control": "no-store" } },
+      );
+    }
+    const payload: unknown = JSON.parse(new TextDecoder().decode(bytes));
     const parsed = agentRequestSchema.safeParse(payload);
     if (!parsed.success) {
       return Response.json({ error: "Invalid agent request" }, { status: 400 });
     }
+    release = agentLimiter.tryAcquire();
+    if (!release) {
+      return Response.json(
+        { error: "Another local agent run is already active" },
+        {
+          status: 429,
+          headers: { "Cache-Control": "no-store", "Retry-After": "1" },
+        },
+      );
+    }
 
     const environment = env as unknown as Record<string, string | undefined>;
     const isVirtualDemo = parsed.data.assetId === DEMO_ASSET.id;
-    if (isVirtualDemo && parsed.data.mode === "live") {
-      return Response.json(
-        { error: "The virtual demo asset is available only in fixture mode" },
-        { status: 400 },
-      );
-    }
-    const mode = isVirtualDemo ? "fixture" : (parsed.data.mode ?? "live");
+    const mode = isVirtualDemo
+      ? (parsed.data.mode ?? "fixture")
+      : (parsed.data.mode ?? "live");
     const repository: AgentRepository = isVirtualDemo
       ? virtualDemoRepository()
       : new AssetRepository(
@@ -76,6 +111,7 @@ export async function POST(request: Request): Promise<Response> {
       fetchImpl: fetch,
       ollamaBaseUrl: config.ollama.baseUrl,
       mode,
+      signal: request.signal,
     });
 
     return Response.json(result, {
@@ -89,5 +125,7 @@ export async function POST(request: Request): Promise<Response> {
       { error: "The local evidence agent is unavailable" },
       { status: 500, headers: { "Cache-Control": "no-store" } },
     );
+  } finally {
+    release?.();
   }
 }

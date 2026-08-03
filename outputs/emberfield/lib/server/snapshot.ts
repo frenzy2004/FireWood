@@ -89,6 +89,22 @@ export interface Snapshot {
     airnow: SnapshotSourceState;
     wfigs: SnapshotSourceState;
   };
+  limits?: SnapshotLimitState;
+}
+
+export const SNAPSHOT_LIMITS = {
+  detections: 1_500,
+  groups: 100,
+  incidents: 250,
+  perimeters: 100,
+  perimeterCoordinates: 50_000,
+  weatherConcurrency: 4,
+} as const;
+
+export interface SnapshotLimitState {
+  exactRadiusApplied: true;
+  truncated: Array<"detections" | "groups" | "incidents" | "perimeters">;
+  alertsAutomated: boolean;
 }
 
 export interface BuildSnapshotInput {
@@ -147,6 +163,84 @@ const sourceState = (
   sourceUrl: safeSourceUrl(payload.source, payload.sourceUrl),
   fetchedAt: payload.fetchedAt,
   observedAt: payload.observedAt,
+});
+
+const partialWhenTruncated = (
+  state: SnapshotSourceState,
+  truncated: boolean,
+): SnapshotSourceState =>
+  truncated && state.status === "ok" ? { ...state, status: "partial" } : state;
+
+const coordinateCount = (value: unknown): number => {
+  if (!Array.isArray(value)) return 0;
+  if (
+    value.length >= 2 &&
+    typeof value[0] === "number" &&
+    typeof value[1] === "number"
+  ) {
+    return 1;
+  }
+  return value.reduce((count, child) => count + coordinateCount(child), 0);
+};
+
+function boundedPerimeters(perimeters: WfigsPerimeter[]): WfigsPerimeter[] {
+  const bounded: WfigsPerimeter[] = [];
+  let coordinates = 0;
+  for (const perimeter of perimeters) {
+    if (bounded.length >= SNAPSHOT_LIMITS.perimeters) break;
+    const candidateCoordinates = coordinateCount(perimeter.geometry.coordinates);
+    if (coordinates + candidateCoordinates > SNAPSHOT_LIMITS.perimeterCoordinates) {
+      break;
+    }
+    coordinates += candidateCoordinates;
+    bounded.push(perimeter);
+  }
+  return bounded;
+}
+
+async function settleWithConcurrency<T, R>(
+  values: T[],
+  maximumConcurrent: number,
+  worker: (value: T, index: number) => Promise<R>,
+  signal?: AbortSignal,
+): Promise<PromiseSettledResult<R>[]> {
+  const results = new Array<PromiseSettledResult<R>>(values.length);
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.min(maximumConcurrent, values.length) },
+    async () => {
+      while (cursor < values.length) {
+        signal?.throwIfAborted();
+        const index = cursor;
+        cursor += 1;
+        try {
+          results[index] = {
+            status: "fulfilled",
+            value: await worker(values[index], index),
+          };
+        } catch (reason) {
+          results[index] = { status: "rejected", reason };
+        }
+      }
+    },
+  );
+  await Promise.all(workers);
+  signal?.throwIfAborted();
+  return results;
+}
+
+const disabledAutomation = (group: SnapshotGroup): SnapshotGroup => ({
+  ...group,
+  assessment: {
+    ...group.assessment,
+    dataConfidence: Math.min(59, group.assessment.dataConfidence),
+    dataQuality: "limited",
+    completeness:
+      group.assessment.completeness === "complete"
+        ? "partial"
+        : group.assessment.completeness,
+    canAutomateAlerts: false,
+  },
 });
 
 function ringContains(point: { lat: number; lon: number }, ring: number[][]): boolean {
@@ -247,10 +341,16 @@ function assessmentFor(
 function fixtureSnapshot(input: BuildSnapshotInput, now: Date): Snapshot {
   const fixture = createDemoFixture(now);
   const bbox = input.bbox ?? boundingBox(input.asset.location, input.asset.radiusKm);
-  const clusters = clusterDetections(fixture.firms.data.detections, {
+  const detections = fixture.firms.data.detections
+    .filter(
+      (detection) =>
+        distanceKm(input.asset.location, detection) <= input.asset.radiusKm,
+    )
+    .slice(0, SNAPSHOT_LIMITS.detections);
+  const clusters = clusterDetections(detections, {
     maxDistanceKm: 1.5,
     maxGapHours: 6,
-  });
+  }).slice(0, SNAPSHOT_LIMITS.groups);
   const groups = clusters.map((cluster) => {
     const weather = fixture.nws.data.weather;
     return {
@@ -277,7 +377,7 @@ function fixtureSnapshot(input: BuildSnapshotInput, now: Date): Snapshot {
     generatedAt: now.toISOString(),
     asset: input.asset,
     bbox,
-    detections: fixture.firms.data.detections,
+    detections,
     groups,
     incidents: fixture.wfigs.data.incidents,
     perimeters: fixture.wfigs.data.perimeters,
@@ -294,6 +394,11 @@ function fixtureSnapshot(input: BuildSnapshotInput, now: Date): Snapshot {
       },
       airnow: toState(fixture.airnow),
       wfigs: toState(fixture.wfigs),
+    },
+    limits: {
+      exactRadiusApplied: true,
+      truncated: [],
+      alertsAutomated: true,
     },
   };
 }
@@ -331,34 +436,53 @@ export async function buildSnapshot(
   const firms = firmsResult.status === "fulfilled" ? firmsResult.value : null;
   const airPayload = airResult.status === "fulfilled" ? airResult.value : null;
   const wfigs = wfigsResult.status === "fulfilled" ? wfigsResult.value : null;
-  const detections = firms?.detections ?? [];
+  const radiusDetections = (firms?.detections ?? []).filter(
+    (detection) =>
+      distanceKm(input.asset.location, detection) <= input.asset.radiusKm,
+  );
+  const detections = radiusDetections.slice(0, SNAPSHOT_LIMITS.detections);
   const air = airPayload?.air ?? null;
-  const incidents = wfigs?.incidents ?? [];
-  const perimeters = wfigs?.perimeters ?? [];
-  const clusters = clusterDetections(detections, {
+  const radiusIncidents = (wfigs?.incidents ?? []).filter(
+    (incident) =>
+      distanceKm(input.asset.location, incident.location) <= input.asset.radiusKm,
+  );
+  const incidents = radiusIncidents.slice(0, SNAPSHOT_LIMITS.incidents);
+  const rawPerimeters = wfigs?.perimeters ?? [];
+  const perimeters = boundedPerimeters(rawPerimeters);
+  const allClusters = clusterDetections(detections, {
     maxDistanceKm: 1.5,
     maxGapHours: 6,
   });
+  const clusters = allClusters.slice(0, SNAPSHOT_LIMITS.groups);
+  const truncated: SnapshotLimitState["truncated"] = [];
+  if (radiusDetections.length > detections.length) truncated.push("detections");
+  if (allClusters.length > clusters.length) truncated.push("groups");
+  if (radiusIncidents.length > incidents.length) truncated.push("incidents");
+  if (rawPerimeters.length > perimeters.length) truncated.push("perimeters");
+  const alertsAutomated = truncated.length === 0;
 
   const fetchWeather = dependencies.fetchWeather ?? fetchWeatherContext;
-  const weatherResults = await Promise.allSettled(
-    clusters.map((cluster) =>
+  const weatherResults = await settleWithConcurrency(
+    clusters,
+    SNAPSHOT_LIMITS.weatherConcurrency,
+    (cluster) =>
       fetchWeather({
         location: cluster.centroid,
         at: new Date(cluster.latestAcquiredAt),
       }, adapterDependencies),
-    ),
+    dependencies.signal,
   );
   dependencies.signal?.throwIfAborted();
   const groups = clusters.map((cluster, index) => {
     const result = weatherResults[index];
     const weather = result?.status === "fulfilled" ? result.value.weather : null;
-    return {
+    const group = {
       cluster,
       weather,
       assessment: assessmentFor(input.asset, cluster, weather, air, now),
       officialMatch: matchIncident(cluster, incidents, perimeters),
     };
+    return alertsAutomated ? group : disabledAutomation(group);
   });
   const weatherSuccesses = weatherResults.flatMap((result) =>
     result.status === "fulfilled" ? [result.value] : [],
@@ -427,15 +551,26 @@ export async function buildSnapshot(
     air,
     sources: {
       firms: firms
-        ? sourceState(firms)
+        ? partialWhenTruncated(
+            sourceState(firms),
+            truncated.includes("detections") || truncated.includes("groups"),
+          )
         : sourceError("live", "NASA FIRMS", generatedAt),
       nws: nwsState,
       airnow: airPayload
         ? sourceState(airPayload)
         : sourceError("live", "AirNow", generatedAt),
       wfigs: wfigs
-        ? sourceState(wfigs)
+        ? partialWhenTruncated(
+            sourceState(wfigs),
+            truncated.includes("incidents") || truncated.includes("perimeters"),
+          )
         : sourceError("live", "WFIGS", generatedAt),
+    },
+    limits: {
+      exactRadiusApplied: true,
+      truncated,
+      alertsAutomated,
     },
   };
 }

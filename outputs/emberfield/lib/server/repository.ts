@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 import type { Alert, AlertType, Asset } from "../domain/types";
+import type { DataMode } from "../sources/shared";
+import type { StoredSnapshotRun } from "./snapshot-history";
 import type { Snapshot, SnapshotSourceState } from "./snapshot";
 
 export const ASSET_CATEGORIES = [
@@ -23,7 +25,7 @@ export const assetCreateSchema = z.object({
   category: z.enum(ASSET_CATEGORIES),
   latitude: z.number().finite().min(-90).max(90),
   longitude: z.number().finite().min(-180).max(180),
-  radiusKm: z.number().finite().min(1).max(160.934),
+  radiusKm: z.number().finite().min(1).max(100),
   notes: assetNotesSchema.optional(),
 }).strict();
 
@@ -100,6 +102,17 @@ type AlertRow = {
   updated_at: string;
   message: string;
   acknowledged: number;
+};
+
+type SnapshotRunRow = {
+  id: string;
+  asset_id: string;
+  mode: DataMode;
+  generated_at: string;
+  snapshot_json: string;
+  alerts_json: string;
+  byte_size: number;
+  created_at: string;
 };
 
 const agentRunSchema = z.object({
@@ -201,6 +214,62 @@ const detectionFingerprint = (
   ].join("|");
 };
 
+const MAXIMUM_SNAPSHOT_RUN_BYTES = 4_000_000;
+const MAXIMUM_D1_BATCH_STATEMENTS = 100;
+
+function sanitizePersistedValue(value: unknown, key = ""): unknown {
+  if (/api.?key|access.?key|token|password|secret|authorization/i.test(key)) {
+    return "[redacted]";
+  }
+  if (typeof value === "string" && /^https?:\/\//i.test(value)) {
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.username || url.password) {
+        return "[redacted-url]";
+      }
+      url.search = "";
+      url.hash = "";
+      return url.toString();
+    } catch {
+      return "[redacted-url]";
+    }
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizePersistedValue(entry));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([entryKey, entryValue]) => [
+        entryKey,
+        sanitizePersistedValue(entryValue, entryKey),
+      ]),
+    );
+  }
+  return value;
+}
+
+function snapshotRunFromRow(row: SnapshotRunRow): StoredSnapshotRun {
+  const snapshot = JSON.parse(row.snapshot_json) as Snapshot;
+  const alerts = JSON.parse(row.alerts_json) as Alert[];
+  if (
+    snapshot.asset.id !== row.asset_id ||
+    snapshot.mode !== row.mode ||
+    !Array.isArray(alerts)
+  ) {
+    throw new Error("Stored snapshot run identity is invalid");
+  }
+  return {
+    id: row.id,
+    assetId: row.asset_id,
+    mode: row.mode,
+    generatedAt: row.generated_at,
+    snapshot,
+    alerts,
+    byteSize: Number(row.byte_size),
+    createdAt: row.created_at,
+  };
+}
+
 export class RepositoryNotFoundError extends Error {}
 
 export class AssetRepository {
@@ -227,13 +296,18 @@ export class AssetRepository {
     return results.map(asSavedAsset);
   }
 
-  private async findAsset(id: string): Promise<SavedAsset | null> {
+  async getAsset(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<SavedAsset | null> {
+    throwIfAborted(signal);
     const row = await this.database
       .prepare(`SELECT id, name, category, latitude, longitude, radius_km, notes,
         created_at, updated_at
         FROM assets WHERE id = ?`)
       .bind(id)
       .first<AssetRow>();
+    throwIfAborted(signal);
     return row ? asSavedAsset(row) : null;
   }
 
@@ -271,7 +345,7 @@ export class AssetRepository {
 
   async updateAsset(id: string, input: UpdateAssetInput): Promise<SavedAsset> {
     const parsed = assetUpdateSchema.parse(input);
-    const existing = await this.findAsset(id);
+    const existing = await this.getAsset(id);
     if (!existing) throw new RepositoryNotFoundError(`Asset ${id} was not found`);
     const updated: SavedAsset = {
       ...existing,
@@ -454,7 +528,106 @@ export class AssetRepository {
     // D1 exposes no cancellation for an issued atomic batch. The final check
     // guarantees an aborted caller cannot begin a new write; an in-flight batch
     // may still finish atomically after its caller is aborted.
-    await this.database.batch(statements);
+    for (
+      let offset = 0;
+      offset < statements.length;
+      offset += MAXIMUM_D1_BATCH_STATEMENTS
+    ) {
+      throwIfAborted(signal);
+      await this.database.batch(
+        statements.slice(offset, offset + MAXIMUM_D1_BATCH_STATEMENTS),
+      );
+    }
+  }
+
+  async saveSnapshotRun(
+    snapshot: Snapshot,
+    snapshotAlerts: Alert[] = [],
+    signal?: AbortSignal,
+  ): Promise<StoredSnapshotRun> {
+    throwIfAborted(signal);
+    const generatedAt = utcIso(snapshot.generatedAt);
+    const createdAt = utcIso(this.now());
+    const sanitizedSnapshot = sanitizePersistedValue({
+      ...snapshot,
+      sources: Object.fromEntries(
+        Object.entries(snapshot.sources).map(([sourceName, state]) => [
+          sourceName,
+          normalizedSourceState(state),
+        ]),
+      ),
+    }) as Snapshot;
+    const sanitizedAlerts = sanitizePersistedValue(snapshotAlerts) as Alert[];
+    const snapshotJson = JSON.stringify(sanitizedSnapshot);
+    const alertsJson = JSON.stringify(sanitizedAlerts);
+    const byteSize = new TextEncoder().encode(snapshotJson + alertsJson).byteLength;
+    if (byteSize > MAXIMUM_SNAPSHOT_RUN_BYTES) {
+      throw new Error("Snapshot run exceeds the persistence limit");
+    }
+    const run: StoredSnapshotRun = {
+      id: this.createId(),
+      assetId: snapshot.asset.id,
+      mode: snapshot.mode,
+      generatedAt,
+      snapshot: sanitizedSnapshot,
+      alerts: sanitizedAlerts,
+      byteSize,
+      createdAt,
+    };
+    const statement = this.database
+      .prepare(`INSERT INTO snapshot_runs (
+        id, asset_id, mode, generated_at, snapshot_json, alerts_json,
+        byte_size, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(
+        run.id,
+        run.assetId,
+        run.mode,
+        run.generatedAt,
+        snapshotJson,
+        alertsJson,
+        run.byteSize,
+        run.createdAt,
+      );
+    throwIfAborted(signal);
+    await statement.run();
+    return run;
+  }
+
+  async loadSnapshotHistory(
+    assetId: string,
+    mode: DataMode,
+    since: string,
+    signal?: AbortSignal,
+  ): Promise<StoredSnapshotRun[]> {
+    throwIfAborted(signal);
+    const normalizedSince = utcIso(since);
+    const { results } = await this.database
+      .prepare(`SELECT id, asset_id, mode, generated_at, snapshot_json,
+        alerts_json, byte_size, created_at
+        FROM snapshot_runs
+        WHERE asset_id = ? AND mode = ? AND generated_at >= ?
+        ORDER BY generated_at DESC, id ASC
+        LIMIT ?`)
+      .bind(assetId, mode, normalizedSince, 48)
+      .all<SnapshotRunRow>();
+    throwIfAborted(signal);
+    return results.map(snapshotRunFromRow);
+  }
+
+  async pruneSnapshotHistory(
+    assetId: string,
+    mode: DataMode,
+    before: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    throwIfAborted(signal);
+    const statement = this.database
+      .prepare(`DELETE FROM snapshot_runs
+        WHERE asset_id = ? AND mode = ? AND generated_at < ?`)
+      .bind(assetId, mode, utcIso(before));
+    throwIfAborted(signal);
+    await statement.run();
   }
 
   async listAlerts(

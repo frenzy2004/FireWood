@@ -13,7 +13,9 @@ import {
 const POINT_ENDPOINT = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Incident_Locations_Current/FeatureServer/0/query";
 const PERIMETER_ENDPOINT = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query";
 const PAGE_SIZE = 2_000;
-const MAXIMUM_PAGES = 5;
+// Two layers at one eight-megabyte page each cap aggregate WFIGS response
+// material at 16 MB before parsing and persistence.
+const MAXIMUM_PAGES = 1;
 
 export const WFIGS_POINT_FIELDS = "OBJECTID,GlobalID,IrwinID,IncidentName,IncidentTypeCategory,IncidentSize,PercentContained,FireDiscoveryDateTime,ModifiedOnDateTime_dt";
 export const WFIGS_PERIMETER_FIELDS = "OBJECTID,GlobalID,poly_SourceGlobalID,poly_IRWINID,poly_IncidentName,poly_GISAcres,poly_DateCurrent,poly_PolygonDateTime,attr_PercentContained,attr_IncidentTypeCategory,attr_ModifiedOnDateTime_dt";
@@ -55,7 +57,7 @@ export interface WfigsData {
 
 export interface WfigsPayload extends WfigsData {
   mode: "live";
-  status: "ok";
+  status: "ok" | "partial";
   source: "WFIGS";
   fetchedAt: string;
   observedAt: string | null;
@@ -182,8 +184,9 @@ async function fetchLayer(
   bbox: BoundingBox,
   fetchImplementation: typeof fetch,
   signal?: AbortSignal,
-): Promise<WfigsData> {
+): Promise<WfigsData & { truncated: boolean }> {
   const combined: WfigsData = { incidents: [], perimeters: [] };
+  let truncated = false;
   for (let page = 0; page < MAXIMUM_PAGES; page += 1) {
     const url = queryUrl(endpoint, bbox, fields, page * PAGE_SIZE);
     const response = await fetchWithTimeout(
@@ -195,12 +198,14 @@ async function fetchLayer(
       signal,
     );
     const payload = await boundedJson("WFIGS", response, 8_000_000);
+    const features = featureCollection(payload);
     const parsed = parseWfigsGeoJson(payload, kind);
     combined.incidents.push(...parsed.incidents);
     combined.perimeters.push(...parsed.perimeters);
-    if (featureCollection(payload).length < PAGE_SIZE) break;
+    truncated = features.length >= PAGE_SIZE;
+    if (!truncated) break;
   }
-  return combined;
+  return { ...combined, truncated };
 }
 
 export async function fetchWfigs(
@@ -238,7 +243,7 @@ export async function fetchWfigs(
     ].sort();
     return {
       mode: "live",
-      status: "ok",
+      status: points.truncated || perimeters.truncated ? "partial" : "ok",
       source: "WFIGS",
       fetchedAt: utcNow(dependencies.now),
       observedAt: observedTimes.at(-1) ?? null,

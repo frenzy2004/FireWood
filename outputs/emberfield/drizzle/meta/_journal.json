@@ -8,6 +8,13 @@
       "when": 1785766886750,
       "tag": "0000_emberfield",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1785773421925,
+      "tag": "0001_snapshot_history",
+      "breakpoints": true
     }
   ]
 }

@@ -614,4 +614,38 @@ describe("live source adapters", () => {
     expect(requested.every((url) => url.searchParams.get("resultRecordCount") === "2000"))
       .toBe(true);
   });
+
+  it("stops WFIGS at one bounded page per layer and reports possible truncation", async () => {
+    const requested: URL[] = [];
+    const fetchImplementation: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      requested.push(url);
+      const source = url.pathname.includes("Incident_Locations")
+        ? wfigsPoints
+        : wfigsPerimeters;
+      return Response.json({
+        ...source,
+        features: Array.from({ length: 2_000 }, (_, index) => ({
+          ...source.features[0],
+          id: index,
+        })),
+      });
+    };
+
+    const result = await fetchWfigs(
+      {
+        bbox: {
+          west: -117.19,
+          south: 40.6,
+          east: -115.89,
+          north: 41.5,
+          crossesAntimeridian: false,
+        },
+      },
+      { fetchImplementation },
+    );
+
+    expect(result.status).toBe("partial");
+    expect(requested).toHaveLength(2);
+  });
 });

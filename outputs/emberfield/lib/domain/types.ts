@@ -153,6 +153,7 @@ export interface Alert {
 export interface AlertEvaluation {
   assetId: string;
   clusterId: string;
+  dedupeScope?: string;
   evaluatedAt: string;
   inRadius: boolean;
   satellites: string[];
