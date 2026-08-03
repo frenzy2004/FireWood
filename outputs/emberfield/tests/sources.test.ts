@@ -16,6 +16,10 @@ import {
   parseFirmsCsv,
 } from "../lib/sources/firms";
 import { fetchWeatherContext, parseNwsGrid } from "../lib/sources/nws";
+import {
+  boundedText,
+  fetchWithTimeout,
+} from "../lib/sources/shared";
 import { fetchWfigs, parseWfigsGeoJson } from "../lib/sources/wfigs";
 
 const okFetch: typeof fetch = async () =>
@@ -256,6 +260,12 @@ describe("source payload parsers", () => {
       windFromDeg: 245,
       humidityPercent: 18,
       relativeHumidityPct: 18,
+      observedAt: "2026-08-03T05:00:00.000Z",
+      selectedValidTimes: {
+        windSpeed: "2026-08-03T04:00:00+00:00/PT1H",
+        windDirection: "2026-08-03T04:00:00+00:00/PT1H",
+        relativeHumidity: "2026-08-03T05:00:00+00:00/PT1H",
+      },
     });
   });
 
@@ -307,6 +317,86 @@ describe("source payload parsers", () => {
     payload.features[0].properties.ModifiedOnDateTime_dt = null;
 
     expect(parseWfigsGeoJson(payload, "points").incidents[0].updatedAt).toBeNull();
+  });
+});
+
+describe("bounded source response handling", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("keeps the request timeout active while a streamed body is consumed", async () => {
+    vi.useFakeTimers();
+    let aborted = false;
+    const fetchImplementation: typeof fetch = async (_input, init) => {
+      let bodyTimer: ReturnType<typeof setTimeout> | undefined;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            init?.signal?.addEventListener("abort", () => {
+              aborted = true;
+              if (bodyTimer) clearTimeout(bodyTimer);
+              controller.error(new DOMException("Timed out", "AbortError"));
+            });
+          },
+          pull(controller) {
+            return new Promise<void>((resolve) => {
+              bodyTimer = setTimeout(() => {
+                controller.enqueue(new TextEncoder().encode("eventually"));
+                controller.close();
+                resolve();
+              }, 200);
+            });
+          },
+        }),
+      );
+    };
+
+    const response = await fetchWithTimeout(
+      "Test source",
+      "https://example.test/slow",
+      {},
+      fetchImplementation,
+      100,
+    );
+    const pendingBody = boundedText("Test source", response, 100);
+    const rejection = expect(pendingBody).rejects.toMatchObject({ code: "timeout" });
+    await vi.advanceTimersByTimeAsync(250);
+
+    await rejection;
+    expect(aborted).toBe(true);
+  });
+
+  it("cancels a chunked response as soon as its byte limit is exceeded", async () => {
+    let cancelled = false;
+    let pulls = 0;
+    const fetchImplementation: typeof fetch = async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            pulls += 1;
+            controller.enqueue(new Uint8Array(8));
+            if (pulls === 10) controller.close();
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      );
+
+    const response = await fetchWithTimeout(
+      "Test source",
+      "https://example.test/chunked",
+      {},
+      fetchImplementation,
+      1_000,
+    );
+
+    await expect(boundedText("Test source", response, 10)).rejects.toMatchObject({
+      code: "response-too-large",
+    });
+    expect(cancelled).toBe(true);
+    expect(pulls).toBeLessThan(10);
   });
 });
 
@@ -401,7 +491,14 @@ describe("live source adapters", () => {
       { fetchImplementation, now: () => new Date("2026-08-03T05:00:00Z") },
     );
 
-    expect(result.weather).toMatchObject({ relativeHumidityPct: 18 });
+    expect(result).toMatchObject({
+      observedAt: "2026-08-03T05:00:00.000Z",
+      sourceUrl: "https://api.weather.gov/gridpoints/LKN/1,2",
+      weather: {
+        relativeHumidityPct: 18,
+        observedAt: "2026-08-03T05:00:00.000Z",
+      },
+    });
     expect(requests).toHaveLength(2);
     expect(requests.every(({ userAgent }) => userAgent?.includes("EmberField")))
       .toBe(true);

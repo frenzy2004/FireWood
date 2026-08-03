@@ -66,6 +66,11 @@ const weatherPayload = {
     relativeHumidityPct: 18,
     quality: "direct-fresh" as const,
     observedAt: "2026-08-03T05:00:00.000Z",
+    selectedValidTimes: {
+      windSpeed: "2026-08-03T05:00:00+00:00/PT1H",
+      windDirection: "2026-08-03T05:00:00+00:00/PT1H",
+      relativeHumidity: "2026-08-03T05:00:00+00:00/PT1H",
+    },
   },
 };
 
@@ -173,10 +178,32 @@ describe("snapshot composition", () => {
       mode: "live",
       generatedAt: "2026-08-03T06:00:00.000Z",
       sources: {
-        firms: { status: "ok", mode: "live" },
-        nws: { status: "ok", mode: "live" },
-        airnow: { status: "error", mode: "live" },
-        wfigs: { status: "ok", mode: "live" },
+        firms: {
+          status: "ok",
+          mode: "live",
+          source: "NASA FIRMS",
+          sourceUrl: null,
+        },
+        nws: {
+          status: "ok",
+          mode: "live",
+          source: "NWS",
+          sourceUrl: "https://api.weather.gov/gridpoints/LKN/1,2",
+          sourceUrls: ["https://api.weather.gov/gridpoints/LKN/1,2"],
+          coverage: { succeeded: 1, failed: 0, total: 1 },
+        },
+        airnow: {
+          status: "error",
+          mode: "live",
+          source: "AirNow",
+          sourceUrl: null,
+        },
+        wfigs: {
+          status: "ok",
+          mode: "live",
+          source: "WFIGS",
+          sourceUrl: null,
+        },
       },
     });
     expect(snapshot.detections).toHaveLength(2);
@@ -218,6 +245,97 @@ describe("snapshot composition", () => {
     expect(snapshot.mode).toBe("live");
     expect(snapshot.detections).toEqual([]);
     expect(snapshot.sources.firms.status).toBe("error");
+    expect(JSON.stringify(snapshot.sources)).not.toContain("configured");
+  });
+
+  it("never propagates FIRMS or AirNow credential-bearing source URLs", async () => {
+    const snapshot = await buildSnapshot(
+      { asset: DEMO_ASSET, bbox: DEMO_BBOX, mode: "live" },
+      {
+        now: () => now,
+        config: {
+          firms: { mapKey: "firms-secret" },
+          airnow: { apiKey: "airnow-secret" },
+          ollama: { baseUrl: "http://127.0.0.1:11434", model: "gemma4:12b" },
+        },
+        fetchFirms: async () => ({
+          ...firmsPayload,
+          sourceUrl:
+            "https://firms.modaps.eosdis.nasa.gov/api/area/csv/firms-secret/feed/bbox/1",
+        }),
+        fetchWeather: async () => weatherPayload,
+        fetchAir: async () => ({
+          mode: "live",
+          status: "ok",
+          source: "AirNow",
+          sourceUrl:
+            "https://www.airnowapi.org/aq/observation/latLong/current/?API_KEY=airnow-secret",
+          fetchedAt: now.toISOString(),
+          observedAt: null,
+          observations: [],
+          air: null,
+        }),
+        fetchWfigs: async () => wfigsPayload,
+      },
+    );
+
+    expect(snapshot.sources.firms.sourceUrl).toBeNull();
+    expect(snapshot.sources.airnow.sourceUrl).toBeNull();
+    expect(JSON.stringify(snapshot)).not.toContain("firms-secret");
+    expect(JSON.stringify(snapshot)).not.toContain("airnow-secret");
+  });
+
+  it("reports explicit partial NWS coverage when one cluster lookup fails", async () => {
+    const splitFirmsPayload = {
+      ...firmsPayload,
+      detections: [
+        ...firmsPayload.detections,
+        {
+          ...firmsPayload.detections[0],
+          id: "distant",
+          fingerprint: "distant",
+          lat: 41.15,
+          lon: -116.65,
+          acquiredAt: "2026-08-03T05:30:00.000Z",
+        },
+      ],
+    };
+    const fetchWeather = vi
+      .fn()
+      .mockResolvedValueOnce(weatherPayload)
+      .mockRejectedValueOnce(new Error("one NWS grid unavailable"));
+
+    const snapshot = await buildSnapshot(
+      { asset: DEMO_ASSET, bbox: DEMO_BBOX, mode: "live" },
+      {
+        now: () => now,
+        config: {
+          firms: { mapKey: "configured" },
+          airnow: { apiKey: "" },
+          ollama: { baseUrl: "http://127.0.0.1:11434", model: "gemma4:12b" },
+        },
+        fetchFirms: async () => splitFirmsPayload,
+        fetchWeather,
+        fetchAir: async () => ({
+          mode: "live",
+          status: "missing-key",
+          source: "AirNow",
+          fetchedAt: now.toISOString(),
+          observedAt: null,
+          observations: [],
+          air: null,
+        }),
+        fetchWfigs: async () => wfigsPayload,
+      },
+    );
+
+    expect(snapshot.groups).toHaveLength(2);
+    expect(snapshot.groups.filter(({ weather }) => weather !== null)).toHaveLength(1);
+    expect(snapshot.sources.nws).toMatchObject({
+      status: "partial",
+      source: "NWS",
+      coverage: { succeeded: 1, failed: 1, total: 2 },
+    });
   });
 
   it("uses only shifted, explicitly labeled data in fixture mode", async () => {

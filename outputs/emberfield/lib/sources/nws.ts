@@ -24,6 +24,11 @@ interface NwsSeries {
 
 export interface ParsedNwsGrid extends WeatherContext {
   humidityPercent: number | null;
+  selectedValidTimes: {
+    windSpeed: string | null;
+    windDirection: string | null;
+    relativeHumidity: string | null;
+  };
 }
 
 export interface FetchWeatherInput {
@@ -37,8 +42,14 @@ export interface WeatherPayload {
   source: "NWS";
   sourceUrl: string;
   fetchedAt: string;
-  observedAt: string;
+  observedAt: string | null;
   weather: ParsedNwsGrid;
+}
+
+interface SelectedNwsValue {
+  value: number;
+  validTime: string;
+  start: number;
 }
 
 function durationMilliseconds(value: string): number {
@@ -72,8 +83,8 @@ function parseSeries(value: unknown): NwsSeries {
   };
 }
 
-function closestValue(series: NwsSeries, target: number): number | null {
-  let selected: { value: number; distance: number; start: number } | null = null;
+function closestValue(series: NwsSeries, target: number): SelectedNwsValue | null {
+  let selected: (SelectedNwsValue & { distance: number }) | null = null;
   for (const row of series.values) {
     if (row.value === null) continue;
     const interval = parseInterval(row.validTime);
@@ -89,10 +100,15 @@ function closestValue(series: NwsSeries, target: number): number | null {
       distance < selected.distance ||
       (distance === selected.distance && interval.start < selected.start)
     ) {
-      selected = { value: row.value, distance, start: interval.start };
+      selected = {
+        value: row.value,
+        validTime: row.validTime,
+        distance,
+        start: interval.start,
+      };
     }
   }
-  return selected?.value ?? null;
+  return selected;
 }
 
 function windSpeedMps(value: number | null, unit: string): number | null {
@@ -119,14 +135,30 @@ export function parseNwsGrid(payload: unknown, instant: Date): ParsedNwsGrid {
   const speedSeries = parseSeries(properties.windSpeed);
   const directionSeries = parseSeries(properties.windDirection);
   const humiditySeries = parseSeries(properties.relativeHumidity);
+  const speed = closestValue(speedSeries, target);
+  const direction = closestValue(directionSeries, target);
   const humidity = closestValue(humiditySeries, target);
+  const selectedStarts = [speed, direction, humidity].flatMap((selection) =>
+    selection ? [selection.start] : [],
+  );
+  // Series are selected independently. Use the latest actual selected interval
+  // start as the single snapshot timestamp, while retaining every raw interval.
+  const observedAt =
+    selectedStarts.length > 0
+      ? new Date(Math.max(...selectedStarts)).toISOString()
+      : undefined;
   return {
-    windSpeedMps: windSpeedMps(closestValue(speedSeries, target), speedSeries.uom),
-    windFromDeg: closestValue(directionSeries, target),
-    humidityPercent: humidity,
-    relativeHumidityPct: humidity,
+    windSpeedMps: windSpeedMps(speed?.value ?? null, speedSeries.uom),
+    windFromDeg: direction?.value ?? null,
+    humidityPercent: humidity?.value ?? null,
+    relativeHumidityPct: humidity?.value ?? null,
     quality: "direct-fresh",
-    observedAt: instant.toISOString(),
+    ...(observedAt ? { observedAt } : {}),
+    selectedValidTimes: {
+      windSpeed: speed?.validTime ?? null,
+      windDirection: direction?.validTime ?? null,
+      relativeHumidity: humidity?.validTime ?? null,
+    },
   };
 }
 
@@ -178,7 +210,7 @@ export async function fetchWeatherContext(
     source: "NWS",
     sourceUrl: gridUrl,
     fetchedAt: utcNow(dependencies.now),
-    observedAt: input.at.toISOString(),
+    observedAt: weather.observedAt ?? null,
     weather,
   };
 }

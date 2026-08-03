@@ -34,11 +34,26 @@ import {
 import { getRuntimeConfig, type RuntimeConfig } from "./config";
 import { sourceCache, type TtlCache } from "./cache";
 
-export type SnapshotSourceStatus = "ok" | "missing-key" | "error" | "not-requested";
+export type SnapshotSourceStatus =
+  | "ok"
+  | "partial"
+  | "missing-key"
+  | "error"
+  | "not-requested";
+
+export interface SnapshotSourceCoverage {
+  succeeded: number;
+  failed: number;
+  total: number;
+}
 
 export interface SnapshotSourceState {
   mode: DataMode;
   status: SnapshotSourceStatus;
+  source: string;
+  sourceUrl: string | null;
+  sourceUrls?: string[];
+  coverage?: SnapshotSourceCoverage;
   fetchedAt: string;
   observedAt: string | null;
   error?: { code: string; message: string };
@@ -100,16 +115,34 @@ const sourceError = (
 ): SnapshotSourceState => ({
   mode,
   status: "error",
+  source,
+  sourceUrl: null,
   fetchedAt,
   observedAt: null,
   error: { code: "unavailable", message: `${source} data is unavailable` },
 });
 
+function safeSourceUrl(source: string, candidate: string | undefined): string | null {
+  if (!candidate || source === "NASA FIRMS" || source === "AirNow") return null;
+  try {
+    const url = new URL(candidate);
+    if (url.protocol !== "https:" || url.username || url.password) return null;
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
 const sourceState = (
-  payload: Pick<FirmsPayload | WeatherPayload | AirQualityPayload | WfigsPayload, "mode" | "status" | "fetchedAt" | "observedAt">,
+  payload: Pick<
+    FirmsPayload | WeatherPayload | AirQualityPayload | WfigsPayload,
+    "mode" | "status" | "source" | "fetchedAt" | "observedAt"
+  > & { sourceUrl?: string },
 ): SnapshotSourceState => ({
   mode: payload.mode,
   status: payload.status,
+  source: payload.source,
+  sourceUrl: safeSourceUrl(payload.source, payload.sourceUrl),
   fetchedAt: payload.fetchedAt,
   observedAt: payload.observedAt,
 });
@@ -229,9 +262,11 @@ function fixtureSnapshot(input: BuildSnapshotInput, now: Date): Snapshot {
       ),
     };
   });
-  const toState = (source: { mode: "fixture"; status: "ok"; fetchedAt: string; observedAt: string | null }): SnapshotSourceState => ({
+  const toState = (source: { mode: "fixture"; status: "ok"; source: string; fetchedAt: string; observedAt: string | null }): SnapshotSourceState => ({
     mode: source.mode,
     status: source.status,
+    source: source.source,
+    sourceUrl: null,
     fetchedAt: source.fetchedAt,
     observedAt: source.observedAt,
   });
@@ -247,7 +282,14 @@ function fixtureSnapshot(input: BuildSnapshotInput, now: Date): Snapshot {
     air: fixture.airnow.data.air,
     sources: {
       firms: toState(fixture.firms),
-      nws: toState(fixture.nws),
+      nws: {
+        ...toState(fixture.nws),
+        coverage: {
+          succeeded: groups.length,
+          failed: 0,
+          total: groups.length,
+        },
+      },
       airnow: toState(fixture.airnow),
       wfigs: toState(fixture.wfigs),
     },
@@ -310,29 +352,57 @@ export async function buildSnapshot(
   const weatherSuccesses = weatherResults.flatMap((result) =>
     result.status === "fulfilled" ? [result.value] : [],
   );
+  const weatherCoverage: SnapshotSourceCoverage = {
+    succeeded: weatherSuccesses.length,
+    failed: weatherResults.length - weatherSuccesses.length,
+    total: weatherResults.length,
+  };
+  const weatherSourceUrls = [
+    ...new Set(
+      weatherSuccesses.flatMap(({ source, sourceUrl }) => {
+        const safeUrl = safeSourceUrl(source, sourceUrl);
+        return safeUrl ? [safeUrl] : [];
+      }),
+    ),
+  ];
   const generatedAt = now.toISOString();
   const nwsState: SnapshotSourceState =
     clusters.length === 0
       ? {
           mode: "live",
           status: "not-requested",
+          source: "NWS",
+          sourceUrl: null,
+          sourceUrls: [],
+          coverage: weatherCoverage,
           fetchedAt: generatedAt,
           observedAt: null,
         }
       : weatherSuccesses.length > 0
         ? {
             mode: "live",
-            status: "ok",
+            status:
+              weatherSuccesses.length === weatherResults.length
+                ? "ok"
+                : "partial",
+            source: "NWS",
+            sourceUrl: weatherSourceUrls[0] ?? null,
+            sourceUrls: weatherSourceUrls,
+            coverage: weatherCoverage,
             fetchedAt: weatherSuccesses
               .map(({ fetchedAt }) => fetchedAt)
               .sort()
               .at(-1) ?? generatedAt,
             observedAt: weatherSuccesses
-              .map(({ observedAt }) => observedAt)
+              .flatMap(({ observedAt }) => (observedAt ? [observedAt] : []))
               .sort()
               .at(-1) ?? null,
           }
-        : sourceError("live", "NWS", generatedAt);
+        : {
+            ...sourceError("live", "NWS", generatedAt),
+            sourceUrls: [],
+            coverage: weatherCoverage,
+          };
 
   return {
     mode: "live",
@@ -345,7 +415,9 @@ export async function buildSnapshot(
     perimeters,
     air,
     sources: {
-      firms: firms ? sourceState(firms) : sourceError("live", "FIRMS", generatedAt),
+      firms: firms
+        ? sourceState(firms)
+        : sourceError("live", "NASA FIRMS", generatedAt),
       nws: nwsState,
       airnow: airPayload
         ? sourceState(airPayload)

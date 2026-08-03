@@ -24,6 +24,37 @@ export class SourceAdapterError extends Error {
 export const utcNow = (now: (() => Date) | undefined) =>
   (now?.() ?? new Date()).toISOString();
 
+interface ResponseLifecycle {
+  controller: AbortController;
+  timeout: ReturnType<typeof setTimeout>;
+  timedOut: boolean;
+  reader?: ReadableStreamDefaultReader<Uint8Array>;
+}
+
+const responseLifecycles = new WeakMap<Response, ResponseLifecycle>();
+
+function finishResponse(response: Response, abort = false): void {
+  const lifecycle = responseLifecycles.get(response);
+  if (!lifecycle) return;
+  clearTimeout(lifecycle.timeout);
+  if (abort && !lifecycle.controller.signal.aborted) {
+    lifecycle.controller.abort();
+  }
+  responseLifecycles.delete(response);
+}
+
+async function cancelResponse(response: Response): Promise<void> {
+  const lifecycle = responseLifecycles.get(response);
+  try {
+    if (lifecycle?.reader) await lifecycle.reader.cancel();
+    else await response.body?.cancel();
+  } catch {
+    // Cancellation is best effort; the normalized adapter error is returned below.
+  } finally {
+    finishResponse(response, true);
+  }
+}
+
 export async function fetchWithTimeout(
   source: string,
   url: string,
@@ -32,18 +63,37 @@ export async function fetchWithTimeout(
   timeoutMs: number,
 ): Promise<Response> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const lifecycle = {
+    controller,
+    timedOut: false,
+  } as ResponseLifecycle;
+  lifecycle.timeout = setTimeout(() => {
+    lifecycle.timedOut = true;
+    controller.abort();
+    void lifecycle.reader?.cancel().catch(() => undefined);
+  }, Math.max(0, timeoutMs));
 
   try {
-    return await fetchImplementation(url, { ...init, signal: controller.signal });
+    const response = await fetchImplementation(url, {
+      ...init,
+      signal: controller.signal,
+    });
+    if (lifecycle.timedOut) {
+      clearTimeout(lifecycle.timeout);
+      await response.body?.cancel().catch(() => undefined);
+      throw new SourceAdapterError(source, "timeout", `${source} request timed out`);
+    }
+    responseLifecycles.set(response, lifecycle);
+    return response;
   } catch (error) {
+    clearTimeout(lifecycle.timeout);
+    if (error instanceof SourceAdapterError) throw error;
     const code =
-      error instanceof DOMException && error.name === "AbortError"
+      lifecycle.timedOut ||
+      (error instanceof DOMException && error.name === "AbortError")
         ? "timeout"
         : "unavailable";
     throw new SourceAdapterError(source, code, `${source} request failed`);
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -53,6 +103,7 @@ export async function boundedText(
   maximumBytes: number,
 ): Promise<string> {
   if (!response.ok) {
+    await cancelResponse(response);
     throw new SourceAdapterError(
       source,
       "upstream-error",
@@ -60,8 +111,14 @@ export async function boundedText(
     );
   }
 
-  const declaredLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
+  const declaredHeader = response.headers.get("content-length");
+  const declaredLength = declaredHeader === null ? null : Number(declaredHeader);
+  if (
+    declaredLength !== null &&
+    Number.isFinite(declaredLength) &&
+    declaredLength > maximumBytes
+  ) {
+    await cancelResponse(response);
     throw new SourceAdapterError(
       source,
       "response-too-large",
@@ -69,15 +126,69 @@ export async function boundedText(
     );
   }
 
-  const text = await response.text();
-  if (new TextEncoder().encode(text).byteLength > maximumBytes) {
+  if (response.body === null) {
+    finishResponse(response);
+    return "";
+  }
+
+  const reader = response.body.getReader();
+  const lifecycle = responseLifecycles.get(response);
+  if (lifecycle) lifecycle.reader = reader;
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (lifecycle?.timedOut) {
+        throw new SourceAdapterError(
+          source,
+          "timeout",
+          `${source} request timed out`,
+        );
+      }
+      if (chunk.done) break;
+      byteLength += chunk.value.byteLength;
+      if (byteLength > maximumBytes) {
+        await cancelResponse(response);
+        throw new SourceAdapterError(
+          source,
+          "response-too-large",
+          `${source} response exceeded the size limit`,
+        );
+      }
+      chunks.push(chunk.value);
+    }
+
+    const bytes = new Uint8Array(byteLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    finishResponse(response);
+    return new TextDecoder().decode(bytes);
+  } catch (error) {
+    const timedOut =
+      lifecycle?.timedOut ||
+      (error instanceof DOMException && error.name === "AbortError");
+    await cancelResponse(response);
+    if (error instanceof SourceAdapterError) throw error;
     throw new SourceAdapterError(
       source,
-      "response-too-large",
-      `${source} response exceeded the size limit`,
+      timedOut ? "timeout" : "unavailable",
+      timedOut
+        ? `${source} request timed out`
+        : `${source} response body failed`,
     );
+  } finally {
+    if (lifecycle) lifecycle.reader = undefined;
+    try {
+      reader.releaseLock();
+    } catch {
+      // An errored or cancelled reader may already have released its lock.
+    }
   }
-  return text;
 }
 
 export async function boundedJson(
