@@ -90,7 +90,7 @@ export const AGENT_TOOL_DEFINITIONS: AgentToolDefinition[] = [
     type: "function",
     function: {
       name: "refresh_asset_data",
-      description: "Refresh and persist current evidence for one saved asset.",
+      description: "Refresh current evidence for one saved asset.",
       parameters: objectParameters({ assetId: assetIdProperty }),
     },
   },
@@ -400,12 +400,6 @@ export async function executeAgentTool(
   const sources = sourceEvidence(snapshot);
 
   if (toolName === "inspect_asset") {
-    ensureActive(context);
-    const alerts = await context.repository.listAlerts(
-      savedAsset.id,
-      context.signal,
-    );
-    ensureActive(context);
     return {
       data: {
         asset: assetEvidence(savedAsset),
@@ -413,7 +407,6 @@ export async function executeAgentTool(
         mode: snapshot.mode,
         sources,
         activityGroups: snapshot.groups.map(groupEvidence),
-        unacknowledgedAlertCount: alerts.length,
         missingData: Object.entries(snapshot.sources)
           .filter(([, state]) => state.status !== "ok")
           .map(([name, state]) => `${name}:${state.status}`),

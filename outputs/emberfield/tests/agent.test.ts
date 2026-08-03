@@ -172,12 +172,17 @@ describe("Gemma native tool loop", () => {
       id: "call-inspect",
       function: { index: 4 },
     });
-    expect(continuation.messages.find(({ role }) => role === "tool")).toMatchObject({
+    const inspectEvidence = continuation.messages.find(
+      ({ role }) => role === "tool",
+    ) as { content: string };
+    expect(inspectEvidence).toMatchObject({
       role: "tool",
       tool_name: "inspect_asset",
     });
-    expect(continuation.messages.find(({ role }) => role === "tool"))
-      .not.toHaveProperty("tool_call_id");
+    expect(inspectEvidence).not.toHaveProperty("tool_call_id");
+    expect(JSON.parse(inspectEvidence.content).data).not.toHaveProperty(
+      "unacknowledgedAlertCount",
+    );
   });
 
   it("returns a bounded tool error for an unknown tool and continues", async () => {
@@ -820,6 +825,15 @@ describe("agent contracts", () => {
       "get_timeline",
       "explain_assessment",
     ]);
+  });
+
+  it("describes refresh as a fresh read rather than unsupported persistence", () => {
+    const refreshTool = AGENT_TOOL_DEFINITIONS.find(
+      ({ function: definition }) => definition.name === "refresh_asset_data",
+    );
+
+    expect(refreshTool?.function.description).toContain("Refresh current evidence");
+    expect(refreshTool?.function.description).not.toMatch(/persist/i);
   });
 
   it("caps serialized tool evidence before it enters Ollama history", () => {
