@@ -23,7 +23,10 @@ export function Dashboard({ initialSnapshot }: { initialSnapshot?: DashboardSnap
   const dashboard = useDashboard(initialSnapshot);
   const [activeTab, setActiveTab] = useState<Tab>("Activity");
   const [setupOpen, setSetupOpen] = useState(false);
-  const [replay, setReplay] = useState<ReplayState>(FULL_REPLAY_STATE);
+  const [replaySession, setReplaySession] = useState<{ snapshotIdentity: string; state: ReplayState }>({
+    snapshotIdentity: "no-snapshot",
+    state: FULL_REPLAY_STATE,
+  });
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const saveAsset = (asset: SavedAsset) => {
     dashboard.setAssets((assets) => [asset, ...assets.filter((item) => item.id !== asset.id)]);
@@ -31,9 +34,17 @@ export function Dashboard({ initialSnapshot }: { initialSnapshot?: DashboardSnap
     setSetupOpen(false);
   };
   const snapshot = dashboard.snapshot;
+  const snapshotIdentity = snapshot
+    ? `${snapshot.asset.id}:${snapshot.mode}:${snapshot.generatedAt}`
+    : "no-snapshot";
+  const replay = replaySession.snapshotIdentity === snapshotIdentity
+    ? replaySession.state
+    : FULL_REPLAY_STATE;
   const replaySnapshot = useMemo(() => applyReplayState(snapshot, replay), [replay, snapshot]);
   const limited = snapshot?.groups.some((group) => group.assessment.dataQuality === "limited" || group.assessment.completeness !== "complete");
-  const updateReplay = useCallback((state: ReplayState) => setReplay(state), []);
+  const updateReplay = useCallback((state: ReplayState) => {
+    setReplaySession({ snapshotIdentity, state });
+  }, [snapshotIdentity]);
   const activateTab = (index: number, focus = false) => {
     const normalized = (index + tabs.length) % tabs.length;
     setActiveTab(tabs[normalized]);
@@ -47,7 +58,7 @@ export function Dashboard({ initialSnapshot }: { initialSnapshot?: DashboardSnap
   };
   const assetRail = <AssetRail assets={dashboard.assets} selectedId={dashboard.selectedAsset.id} summaries={dashboard.summaries} onSelect={dashboard.selectAsset} onAdd={() => setSetupOpen(true)} storageMessage={dashboard.assetStorageError} />;
   const inspector = <ActivityInspector snapshot={replaySnapshot} selectedGroupId={dashboard.selectedGroupId} alerts={dashboard.alerts} replayCutoff={replay.cutoff} />;
-  const timeline = <TimelineDock snapshot={snapshot} onSelect={dashboard.setSelectedGroupId} onReplayChange={updateReplay} />;
+  const timeline = <TimelineDock snapshot={snapshot} replay={replay} onSelect={dashboard.setSelectedGroupId} onReplayChange={updateReplay} />;
   const agent = <AgentPanel snapshot={snapshot} selectedAssetId={dashboard.selectedAsset.id} ollamaStatus={dashboard.health?.integrations.ollama.status} />;
 
   return <main className="console-shell">
@@ -55,7 +66,7 @@ export function Dashboard({ initialSnapshot }: { initialSnapshot?: DashboardSnap
     {dashboard.error ? <div className="console-error" role="alert"><strong>{dashboard.error.attemptedMode === "live" ? "Live evidence needs attention." : "Fixture evidence needs attention."}</strong> {dashboard.error.message} {dashboard.error.retainedMode ? `Showing the previous ${dashboard.error.retainedMode} snapshot${dashboard.error.retainedAssetName ? ` for ${dashboard.error.retainedAssetName}` : ""}.` : "No prior snapshot is being shown."}</div> : null}
     <div className="workspace">
       {assetRail}
-      <div className="map-column"><MapCanvas snapshot={replaySnapshot} selectedGroupId={dashboard.selectedGroupId} onSelect={dashboard.setSelectedGroupId} />{timeline}</div>
+      <div className="map-column"><MapCanvas snapshot={replaySnapshot} selectedGroupId={dashboard.selectedGroupId} onSelect={dashboard.setSelectedGroupId} />{activeTab === "Timeline" ? null : timeline}</div>
       {inspector}
     </div>
     <div className="agent-dock">{agent}</div>

@@ -27,7 +27,7 @@ type AgentPanelProps = {
 };
 
 export function AgentPanel(props: AgentPanelProps) {
-  const identity = `${props.selectedAssetId ?? props.snapshot?.asset.id ?? "no-asset"}:${props.snapshot?.mode ?? "no-mode"}`;
+  const identity = `${props.selectedAssetId ?? props.snapshot?.asset.id ?? "no-asset"}:${props.snapshot?.mode ?? "no-mode"}:${props.snapshot?.generatedAt ?? "no-generation"}`;
   return <AgentPanelContent key={identity} {...props} />;
 }
 

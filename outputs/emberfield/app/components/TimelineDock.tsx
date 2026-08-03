@@ -1,13 +1,14 @@
 "use client";
 
 import { Pause, Play, SkipBack } from "@phosphor-icons/react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   formatShortUtc,
   formatUtc,
   type DashboardDetection,
   type DashboardSnapshot,
+  type SourceState,
 } from "../hooks/use-dashboard";
 
 export type ReplaySources = { firms: boolean; nws: boolean; airnow: boolean };
@@ -29,9 +30,35 @@ function latestConfidence(rows: DashboardDetection[]) {
 }
 
 function atOrBefore(value: string | null | undefined, cutoffMs: number) {
-  if (!value) return true;
+  if (!value) return false;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) && parsed <= cutoffMs;
+}
+
+function latestAtOrBefore(values: Array<string | null | undefined>, cutoffMs: number) {
+  return values
+    .filter((value): value is string => atOrBefore(value, cutoffMs))
+    .sort((left, right) => Date.parse(left) - Date.parse(right))
+    .at(-1) ?? null;
+}
+
+function replaySourceState(
+  state: SourceState,
+  enabled: boolean,
+  observedAt: string | null,
+  cutoffMs: number,
+): SourceState {
+  if (!enabled) {
+    return { ...state, fetchedAt: null, observedAt: null, replayState: "excluded" };
+  }
+  const fetchedAt = atOrBefore(state.fetchedAt, cutoffMs) ? state.fetchedAt : null;
+  const filtered = fetchedAt !== state.fetchedAt || observedAt !== state.observedAt;
+  return {
+    ...state,
+    fetchedAt,
+    observedAt,
+    replayState: filtered ? "cutoff-filtered" : "included",
+  };
 }
 
 export function applyReplayState(
@@ -39,7 +66,10 @@ export function applyReplayState(
   replay: ReplayState,
 ): DashboardSnapshot | undefined {
   if (!snapshot) return undefined;
-  const cutoffMs = replay.cutoff ? Date.parse(replay.cutoff) : Date.parse(snapshot.generatedAt);
+  const requestedCutoffMs = replay.cutoff ? Date.parse(replay.cutoff) : Date.parse(snapshot.generatedAt);
+  const cutoffMs = Number.isFinite(requestedCutoffMs) ? requestedCutoffMs : Date.parse(snapshot.generatedAt);
+  const cutoff = new Date(cutoffMs).toISOString();
+  const isTemporalReplay = replay.cutoff !== null;
   const startMs = Date.parse(snapshot.generatedAt) - 24 * 60 * 60 * 1_000;
   const detections = replay.sources.firms
     ? snapshot.detections.filter((row) => {
@@ -74,16 +104,61 @@ export function applyReplayState(
           maxConfidence: latestConfidence(ordered),
           maxFrpMw,
         },
-        weather: replay.sources.nws && atOrBefore(weatherObservedAt, cutoffMs) ? group.weather : null,
+        weather: replay.sources.nws && (!isTemporalReplay || atOrBefore(weatherObservedAt, cutoffMs)) ? group.weather : null,
+        assessment: isTemporalReplay || !replay.sources.firms || !replay.sources.nws || !replay.sources.airnow
+          ? {
+              ...group.assessment,
+              score: null,
+              scoreRange: null,
+              band: "replay-unassessed",
+              contributions: [],
+              reasons: [],
+              missingInputs: [...new Set([...group.assessment.missingInputs, "replay-assessment"])],
+              completeness: "insufficient",
+              dataQuality: "limited",
+              dataConfidence: 0,
+              canAutomateAlerts: false,
+            }
+          : group.assessment,
       }];
     })
     : [];
   const airObservedAt = snapshot.air?.observedAt ?? snapshot.sources.airnow?.observedAt;
+  const air = replay.sources.airnow && (!isTemporalReplay || atOrBefore(airObservedAt, cutoffMs)) ? snapshot.air : null;
+  const firmsObservedAt = latestAtOrBefore(detections.map((row) => row.acquiredAt), cutoffMs);
+  const nwsObservedAt = latestAtOrBefore([
+    snapshot.sources.nws?.observedAt,
+    ...groups.map((group) => group.weather?.observedAt),
+  ], cutoffMs);
+  const visibleAirObservedAt = air
+    ? latestAtOrBefore([air.observedAt, snapshot.sources.airnow?.observedAt], cutoffMs)
+    : null;
+  const sources = Object.fromEntries(
+    Object.entries(snapshot.sources).map(([key, state]) => {
+      const enabled = key === "firms"
+        ? replay.sources.firms
+        : key === "nws"
+          ? replay.sources.nws
+          : key === "airnow"
+            ? replay.sources.airnow
+            : true;
+      const observedAt = key === "firms"
+        ? firmsObservedAt
+        : key === "nws"
+          ? nwsObservedAt
+          : key === "airnow"
+            ? visibleAirObservedAt
+            : latestAtOrBefore([state.observedAt], cutoffMs);
+      return [key, replaySourceState(state, enabled, observedAt, cutoffMs)];
+    }),
+  );
   return {
     ...snapshot,
+    generatedAt: isTemporalReplay ? cutoff : snapshot.generatedAt,
     detections,
     groups,
-    air: replay.sources.airnow && atOrBefore(airObservedAt, cutoffMs) ? snapshot.air : null,
+    air,
+    sources,
   };
 }
 
@@ -122,51 +197,60 @@ function timelineMarks(snapshot: DashboardSnapshot | undefined): TimelineMark[] 
 type TimelineDockProps = {
   snapshot?: DashboardSnapshot;
   onSelect: (id: string) => void;
-  onReplayChange?: (state: ReplayState) => void;
+  replay: ReplayState;
+  onReplayChange: (state: ReplayState) => void;
 };
 
 export function TimelineDock(props: TimelineDockProps) {
-  return <TimelineDockContent key={props.snapshot?.generatedAt ?? "no-snapshot"} {...props} />;
+  const snapshotIdentity = props.snapshot
+    ? `${props.snapshot.asset.id}:${props.snapshot.mode}:${props.snapshot.generatedAt}`
+    : "no-snapshot";
+  return <TimelineDockContent key={snapshotIdentity} {...props} />;
 }
 
 function TimelineDockContent({
   snapshot,
   onSelect,
+  replay,
   onReplayChange,
 }: TimelineDockProps) {
   const [playing, setPlaying] = useState(false);
-  const [position, setPosition] = useState(24);
-  const [sources, setSources] = useState<ReplaySources>(FULL_REPLAY_STATE.sources);
-  useEffect(() => {
-    if (!playing) return;
-    const timer = window.setInterval(() => {
-      setPosition((value) => {
-        const next = Math.min(24, value + 0.5);
-        if (next === 24) setPlaying(false);
-        return next;
-      });
-    }, 900);
-    return () => window.clearInterval(timer);
-  }, [playing]);
-
-  const cutoff = useMemo(() => {
-    if (!snapshot || position === 24) return null;
-    const start = Date.parse(snapshot.generatedAt) - 24 * 60 * 60 * 1_000;
-    return new Date(start + position * 60 * 60 * 1_000).toISOString();
-  }, [position, snapshot]);
-
-  useEffect(() => {
-    onReplayChange?.({ cutoff, sources });
-  }, [cutoff, onReplayChange, sources]);
-
-  const marks = useMemo(() => timelineMarks(snapshot), [snapshot]);
   const generatedMs = snapshot ? Date.parse(snapshot.generatedAt) : 0;
   const startMs = generatedMs - 24 * 60 * 60 * 1_000;
+  const position = useMemo(() => {
+    if (!snapshot || replay.cutoff === null) return 24;
+    const cutoffMs = Date.parse(replay.cutoff);
+    if (!Number.isFinite(cutoffMs)) return 24;
+    return Math.max(0, Math.min(24, (cutoffMs - startMs) / (60 * 60 * 1_000)));
+  }, [replay.cutoff, snapshot, startMs]);
+
+  const replayAtPosition = useCallback((nextPosition: number): ReplayState => ({
+    cutoff: nextPosition >= 24 || !snapshot
+      ? null
+      : new Date(startMs + nextPosition * 60 * 60 * 1_000).toISOString(),
+    sources: replay.sources,
+  }), [replay.sources, snapshot, startMs]);
+
+  useEffect(() => {
+    if (!playing || !snapshot) return;
+    const timer = window.setTimeout(() => {
+      const next = Math.min(24, position + 0.5);
+      onReplayChange(replayAtPosition(next));
+      if (next === 24) setPlaying(false);
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [onReplayChange, playing, position, replayAtPosition, snapshot]);
+
+  const marks = useMemo(() => timelineMarks(snapshot), [snapshot]);
   const toggleSource = (source: keyof ReplaySources) => {
-    setSources((current) => ({ ...current, [source]: !current[source] }));
+    onReplayChange({
+      ...replay,
+      sources: { ...replay.sources, [source]: !replay.sources[source] },
+    });
   };
   const startPlayback = () => {
-    if (position >= 24) setPosition(0);
+    if (!snapshot) return;
+    if (position >= 24) onReplayChange(replayAtPosition(0));
     setPlaying(true);
   };
 
@@ -174,16 +258,16 @@ function TimelineDockContent({
     <div className="timeline-header">
       <div><p className="eyebrow">24 hour replay</p><h2>Change in detected activity</h2></div>
       <div className="timeline-controls">
-        <button className="icon-button" aria-label="Restart timeline" title="Restart timeline" onClick={() => { setPlaying(false); setPosition(0); }}><SkipBack size={18} /></button>
+        <button className="icon-button" aria-label="Restart timeline" title="Restart timeline" onClick={() => { setPlaying(false); onReplayChange(replayAtPosition(0)); }}><SkipBack size={18} /></button>
         <button className="icon-button" aria-label={playing ? "Pause timeline" : "Play timeline"} title={playing ? "Pause timeline" : "Play timeline"} onClick={() => playing ? setPlaying(false) : startPlayback()}>{playing ? <Pause size={18} /> : <Play size={18} />}</button>
         {(["firms", "nws", "airnow"] as const).map((source) => <label className="source-toggle" key={source}>
-          <input type="checkbox" checked={sources[source]} onChange={() => toggleSource(source)} /> {source === "firms" ? "FIRMS" : source === "nws" ? "NWS" : "AirNow"}
+          <input type="checkbox" checked={replay.sources[source]} onChange={() => toggleSource(source)} /> {source === "firms" ? "FIRMS" : source === "nws" ? "NWS" : "AirNow"}
         </label>)}
       </div>
     </div>
     <div className="timeline-track">
-      <input aria-label="Timeline position" type="range" min="0" max="24" step="0.25" value={position} onChange={(event) => { setPlaying(false); setPosition(Number(event.target.value)); }} />
-      {marks.filter((mark) => sources[mark.source]).map((mark) => {
+      <input aria-label="Timeline position" type="range" min="0" max="24" step="0.25" value={position} onChange={(event) => { setPlaying(false); onReplayChange(replayAtPosition(Number(event.target.value))); }} />
+      {marks.filter((mark) => replay.sources[mark.source]).map((mark) => {
         const acquiredMs = Date.parse(mark.acquiredAt);
         const left = Math.max(0, Math.min(100, ((acquiredMs - startMs) / (24 * 60 * 60 * 1_000)) * 100));
         const label = `${mark.label} at ${formatUtc(mark.acquiredAt)}`;
@@ -192,6 +276,6 @@ function TimelineDockContent({
           : <span key={mark.id} className={`timeline-mark static ${mark.source}`} style={{ left: `${left}%` }} aria-label={label} title={label} />;
       })}
     </div>
-    <div className="timeline-labels"><span>24h ago</span><span>{cutoff ? `Cutoff ${formatUtc(cutoff)}` : "Now"}</span><span>{snapshot ? `Latest ${formatShortUtc(snapshot.detections.at(-1)?.acquiredAt)}` : "Waiting for evidence"}</span></div>
+    <div className="timeline-labels"><span>24h ago</span><span>{replay.cutoff ? `Cutoff ${formatUtc(replay.cutoff)}` : "Now"}</span><span>{snapshot ? `Latest ${formatShortUtc(snapshot.detections.at(-1)?.acquiredAt)}` : "Waiting for evidence"}</span></div>
   </section>;
 }

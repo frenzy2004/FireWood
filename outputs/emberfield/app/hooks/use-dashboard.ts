@@ -14,8 +14,9 @@ export type SourceState = {
   sourceUrl: string | null;
   sourceUrls?: string[];
   coverage?: { succeeded: number; failed: number; total: number };
-  fetchedAt: string;
+  fetchedAt: string | null;
   observedAt: string | null;
+  replayState?: "included" | "excluded" | "cutoff-filtered";
   error?: { code: string; message: string };
 };
 
@@ -128,6 +129,8 @@ export type AssetSummary = {
   score: number | null;
   trend: "up" | "down" | "steady" | "new" | "unknown";
   completeness: "complete" | "partial" | "insufficient" | "no-activity" | string;
+  mode: DataMode;
+  generatedAt: string;
 };
 
 export type DashboardErrorNotice = {
@@ -264,7 +267,7 @@ function summarizeSnapshot(snapshot: DashboardSnapshot, previous?: AssetSummary)
       : score < previous.score
         ? "down"
         : "steady";
-  return { score, trend, completeness };
+  return { score, trend, completeness, mode: snapshot.mode, generatedAt: snapshot.generatedAt };
 }
 
 function isHealthPayload(value: unknown): value is HealthPayload {
@@ -333,6 +336,14 @@ export function useDashboard(initialSnapshot?: DashboardSnapshot) {
       setHealthError(null);
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === "AbortError") return;
+      setHealth((current) => ({
+        status: "degraded",
+        integrations: {
+          firms: { configured: current?.integrations.firms.configured ?? false, status: "error" },
+          airnow: { configured: current?.integrations.airnow.configured ?? false, status: "error" },
+          ollama: { configured: current?.integrations.ollama.configured ?? false, status: "error" },
+        },
+      }));
       setHealthError("Integration health is unavailable.");
     }
   }, []);
@@ -371,7 +382,10 @@ export function useDashboard(initialSnapshot?: DashboardSnapshot) {
       setLastRefreshAt(normalized.generatedAt);
       setSummaries((current) => ({
         ...current,
-        [asset.id]: summarizeSnapshot(normalized, current[asset.id]),
+        [asset.id]: summarizeSnapshot(
+          normalized,
+          prior ? summarizeSnapshot(prior) : undefined,
+        ),
       }));
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === "AbortError") return;

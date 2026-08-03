@@ -2,13 +2,13 @@
 
 import { MapPin, Plus, Tractor } from "@phosphor-icons/react";
 
-import type { AssetSummary, SavedAsset } from "../hooks/use-dashboard";
+import { formatUtc, type AssetSummary, type SavedAsset } from "../hooks/use-dashboard";
 
 const summaryText = (summary: AssetSummary | undefined) => {
   if (!summary) return "Not refreshed · completeness unknown";
   const score = summary.score === null ? "Unassessed" : `Score ${summary.score}`;
   const trend = summary.trend === "new" ? "new snapshot" : `${summary.trend} trend`;
-  return `${score} · ${trend} · ${summary.completeness}`;
+  return `${score} · ${trend} · ${summary.completeness} · ${summary.mode} · refreshed ${formatUtc(summary.generatedAt)}`;
 };
 
 export function AssetRail({

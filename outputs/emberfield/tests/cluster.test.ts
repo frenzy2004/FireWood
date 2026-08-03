@@ -78,4 +78,15 @@ describe("clusterDetections", () => {
 
     expect(reverse).toEqual(forward);
   });
+
+  it("keeps a cluster identity when a later satellite detection is appended", () => {
+    const options = { maxDistanceKm: 1.5, maxGapHours: 6 };
+    const initial = clusterDetections(rows.slice(0, 2), options);
+    const appended = clusterDetections(rows.slice(0, 3), options);
+
+    expect(initial).toHaveLength(1);
+    expect(appended).toHaveLength(1);
+    expect(appended[0].satellites).toEqual(["NOAA-20", "NOAA-21"]);
+    expect(appended[0].id).toBe(initial[0].id);
+  });
 });

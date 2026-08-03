@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgentPanel } from "../app/components/AgentPanel";
 import { SetupPanel } from "../app/components/SetupPanel";
+import { applyReplayState } from "../app/components/TimelineDock";
 import { type DashboardSnapshot, deriveConsoleAlerts } from "../app/hooks/use-dashboard";
 import { Dashboard } from "../app/page";
 
@@ -156,6 +157,33 @@ describe("EmberField console", () => {
     expect((screen.getByLabelText("Address lookup") as HTMLInputElement).value).toBe("100 Farm Road");
   });
 
+  it("does not apply a Census response after the address has changed", async () => {
+    let resolveLookup: ((response: Response) => void) | undefined;
+    let lookupSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((resolve) => {
+      void input;
+      lookupSignal = init?.signal ?? undefined;
+      resolveLookup = resolve;
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SetupPanel onClose={vi.fn()} onSaved={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText("Address lookup"), { target: { value: "100 Farm Road" } });
+    fireEvent.click(screen.getByRole("button", { name: "Lookup" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByLabelText("Address lookup"), { target: { value: "200 Orchard Lane" } });
+
+    expect(lookupSignal?.aborted).toBe(true);
+    await act(async () => {
+      resolveLookup?.(new Response(JSON.stringify({
+        status: "ok",
+        match: { location: { lat: 38.123, lon: -121.456 } },
+      }), { status: 200 }));
+    });
+    expect((screen.getByLabelText("Latitude") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Longitude") as HTMLInputElement).value).toBe("");
+  });
+
   it("scrubs exact raw detections and synchronizes the map count and inspector", async () => {
     render(<Dashboard initialSnapshot={snapshot} />);
     expect(screen.getByText("2 raw detections")).toBeTruthy();
@@ -168,6 +196,31 @@ describe("EmberField console", () => {
     expect(screen.getAllByText(/Replay cutoff 2026-08-03T09:00:00Z/i).length).toBeGreaterThan(0);
   });
 
+  it("uses the replay cutoff as snapshot time and hides the latest assessment", () => {
+    const cutoff = "2026-08-03T09:00:00.000Z";
+    const replayed = applyReplayState(snapshot, {
+      cutoff,
+      sources: { firms: true, nws: true, airnow: true },
+    });
+
+    expect(replayed?.generatedAt).toBe(cutoff);
+    expect(replayed?.groups[0]?.cluster.detectionCount).toBe(1);
+    expect(replayed?.groups[0]?.assessment.score).toBeNull();
+    expect(replayed?.groups[0]?.assessment.contributions).toEqual([]);
+  });
+
+  it("hides source freshness timestamps that occur after a replay cutoff", () => {
+    const replayed = applyReplayState(snapshot, {
+      cutoff: "2026-08-03T09:00:00.000Z",
+      sources: { firms: true, nws: true, airnow: true },
+    });
+
+    expect(replayed?.sources.firms?.observedAt).toBe("2026-08-03T09:00:00.000Z");
+    expect(replayed?.sources.firms?.fetchedAt).toBeNull();
+    expect(replayed?.sources.nws?.observedAt).toBeNull();
+    expect(replayed?.sources.nws?.fetchedAt).toBeNull();
+  });
+
   it("shows health statuses, last refresh, and the agent offline state", async () => {
     render(<Dashboard initialSnapshot={snapshot} />);
 
@@ -176,6 +229,28 @@ describe("EmberField console", () => {
     expect(screen.getByText(/Ollama offline/i)).toBeTruthy();
     expect(screen.getByText(/Last refresh 2026-08-03T12:00:00Z/i)).toBeTruthy();
     expect(screen.getAllByText("Offline").length).toBeGreaterThan(0);
+  });
+
+  it("replaces stale ready badges when a later health probe fails", async () => {
+    let healthCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/assets") return new Response(JSON.stringify({ assets: [] }), { status: 200 });
+      if (String(input) === "/api/health") {
+        healthCalls += 1;
+        return healthCalls === 1
+          ? new Response(JSON.stringify(health), { status: 200 })
+          : new Response(JSON.stringify({ error: "probe failed" }), { status: 503 });
+      }
+      return new Response(JSON.stringify(snapshot), { status: 200 });
+    }));
+    render(<Dashboard initialSnapshot={snapshot} />);
+    await screen.findByText(/FIRMS ready/i);
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh evidence" }));
+
+    await waitFor(() => expect(screen.getByText(/FIRMS error/i)).toBeTruthy());
+    expect(screen.queryByText(/FIRMS ready/i)).toBeNull();
+    expect(screen.getByText(/Ollama error/i)).toBeTruthy();
   });
 
   it("uses keyboard-complete responsive tabs with stable controlled panels", () => {
@@ -191,6 +266,18 @@ describe("EmberField console", () => {
     expect(timeline.getAttribute("aria-selected")).toBe("true");
     expect(document.activeElement).toBe(timeline);
     expect(screen.getByRole("tabpanel", { name: "Timeline" })).toBeTruthy();
+  });
+
+  it("keeps exactly one controlled timeline when its responsive tab opens", async () => {
+    render(<Dashboard initialSnapshot={snapshot} />);
+    expect(screen.getAllByLabelText("Timeline position")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Timeline" }));
+    expect(screen.getAllByLabelText("Timeline position")).toHaveLength(1);
+    fireEvent.change(screen.getByLabelText("Timeline position"), { target: { value: "21" } });
+    fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+
+    await waitFor(() => expect((screen.getByLabelText("Timeline position") as HTMLInputElement).value).toBe("21"));
   });
 
   it("submits the saved asset identity and shows route status plus a tolerant trace", async () => {
@@ -232,6 +319,31 @@ describe("EmberField console", () => {
     expect((await screen.findAllByText("Sierra Field")).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: /brief me on this ranch/i }));
     await waitFor(() => expect(agentBodies).toContainEqual(expect.objectContaining({ assetId: "field-2", mode: "fixture" })));
+  });
+
+  it("does not compare fixture and live scores as an asset trend", async () => {
+    const liveSnapshot: DashboardSnapshot = {
+      ...snapshot,
+      mode: "live",
+      generatedAt: "2026-08-03T13:00:00.000Z",
+      groups: snapshot.groups.map((group) => ({
+        ...group,
+        assessment: { ...group.assessment, score: 68 },
+      })),
+      sources: Object.fromEntries(Object.entries(snapshot.sources).map(([key, source]) => [key, { ...source, mode: "live" }])),
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/assets") return new Response(JSON.stringify({ assets: [] }), { status: 200 });
+      if (String(input) === "/api/health") return new Response(JSON.stringify(health), { status: 200 });
+      return new Response(JSON.stringify(liveSnapshot), { status: 200 });
+    }));
+    render(<Dashboard initialSnapshot={snapshot} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Live data" }));
+
+    await screen.findByText("Showing live snapshot");
+    expect(screen.getByText(/Score 68.*new snapshot.*live.*2026-08-03T13:00:00Z/i)).toBeTruthy();
+    expect(screen.queryByText(/Score 68.*up trend/i)).toBeNull();
   });
 
   it("derives every eligible alert family once with complete operator content", () => {
@@ -310,6 +422,29 @@ describe("EmberField console", () => {
     expect(screen.queryByText("Stale ranch answer")).toBeNull();
   });
 
+  it("aborts and ignores an in-flight agent response when the same snapshot refreshes", async () => {
+    let resolveResponse: ((response: Response) => void) | undefined;
+    let firstSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((resolve) => {
+      void input;
+      firstSignal = init?.signal ?? undefined;
+      resolveResponse = resolve;
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { rerender } = render(<AgentPanel snapshot={snapshot} selectedAssetId="demo-antelope-ranch" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /brief me on this ranch/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    rerender(<AgentPanel snapshot={{ ...snapshot, generatedAt: "2026-08-03T12:05:00.000Z" }} selectedAssetId="demo-antelope-ranch" />);
+    expect(firstSignal?.aborted).toBe(true);
+
+    await act(async () => {
+      resolveResponse?.(new Response(JSON.stringify({ status: "ok", answer: "Stale pre-refresh answer", trace: [] }), { status: 200 }));
+    });
+    expect(screen.queryByText("Stale pre-refresh answer")).toBeNull();
+  });
+
   it("treats a successful agent response with null JSON as unavailable", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("null", { status: 200 })));
     render(<AgentPanel snapshot={snapshot} selectedAssetId="demo-antelope-ranch" />);
@@ -328,10 +463,30 @@ describe("EmberField console", () => {
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "North Field" } });
     fireEvent.change(screen.getByLabelText("Latitude"), { target: { value: "41" } });
     fireEvent.change(screen.getByLabelText("Longitude"), { target: { value: "-116" } });
-    fireEvent.change(screen.getByLabelText("Radius miles"), { target: { value: "62.15" } });
+    fireEvent.change(screen.getByLabelText("Radius kilometers"), { target: { value: "100.01" } });
     fireEvent.submit(screen.getByRole("dialog"));
 
-    expect(screen.getByRole("alert").textContent).toMatch(/between 0\.63 and 62\.14 miles/i);
+    expect(screen.getByRole("alert").textContent).toMatch(/between 1 and 100 kilometers/i);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("saves the exact 1 km and 100 km radius boundaries without conversion drift", async () => {
+    const submittedRadii: number[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { radiusKm: number };
+      submittedRadii.push(body.radiusKm);
+      return new Response(JSON.stringify({ asset: { id: `asset-${body.radiusKm}`, name: "North Field", category: "field", location: { lat: 41, lon: -116 }, radiusKm: body.radiusKm } }), { status: 201 });
+    }));
+    render(<SetupPanel onClose={vi.fn()} onSaved={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "North Field" } });
+    fireEvent.change(screen.getByLabelText("Latitude"), { target: { value: "41" } });
+    fireEvent.change(screen.getByLabelText("Longitude"), { target: { value: "-116" } });
+
+    fireEvent.change(screen.getByLabelText("Radius kilometers"), { target: { value: "1" } });
+    fireEvent.submit(screen.getByRole("dialog"));
+    await waitFor(() => expect(submittedRadii).toEqual([1]));
+    fireEvent.change(screen.getByLabelText("Radius kilometers"), { target: { value: "100" } });
+    fireEvent.submit(screen.getByRole("dialog"));
+    await waitFor(() => expect(submittedRadii).toEqual([1, 100]));
   });
 });

@@ -135,7 +135,7 @@ export function clusterDetections(
       .filter((value): value is number => value !== null && Number.isFinite(value));
 
     return {
-      id: `cluster-${stableHash(memberFingerprints.join(":"))}`,
+      id: `cluster-${members[0].fingerprint}`,
       centroid: centroidOf(detections),
       detections,
       memberFingerprints,
