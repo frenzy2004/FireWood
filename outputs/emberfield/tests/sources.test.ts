@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildHealth, getRuntimeConfig } from "../lib/server/config";
 
@@ -6,6 +6,10 @@ const okFetch: typeof fetch = async () =>
   new Response(JSON.stringify({ models: [] }), { status: 200 });
 
 describe("runtime configuration and source health", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("reports required and optional integrations without exposing secrets", async () => {
     const health = await buildHealth(
       { FIRMS_MAP_KEY: "secret", AIRNOW_API_KEY: "" },
@@ -60,6 +64,7 @@ describe("runtime configuration and source health", () => {
   });
 
   it("bounds the Ollama probe to two seconds", async () => {
+    vi.useFakeTimers();
     const timeoutFetch: typeof fetch = async (_input, init) =>
       new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () =>
@@ -67,8 +72,10 @@ describe("runtime configuration and source health", () => {
         );
       });
 
-    const health = await buildHealth({}, timeoutFetch);
+    const pendingHealth = buildHealth({}, timeoutFetch);
+    await vi.advanceTimersByTimeAsync(2_000);
+    const health = await pendingHealth;
 
     expect(health.integrations.ollama).toMatchObject({ status: "offline" });
-  }, 2_500);
+  });
 });
