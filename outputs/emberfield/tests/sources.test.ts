@@ -550,6 +550,11 @@ describe("live source adapters", () => {
     expect(requests).toHaveLength(2);
     expect(requests.every(({ userAgent }) => userAgent?.includes("EmberField")))
       .toBe(true);
+    expect(
+      requests.every(({ userAgent }) =>
+        userAgent?.includes("https://github.com/frenzy2004/FireWood"),
+      ),
+    ).toBe(true);
   });
 
   it("caches NWS point mapping longer than the grid observation", async () => {

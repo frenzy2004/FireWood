@@ -10,7 +10,8 @@ import {
   type AdapterDependencies,
 } from "./shared";
 
-const NWS_USER_AGENT = "EmberField/0.1 (local wildfire context prototype)";
+const NWS_USER_AGENT =
+  "EmberField/0.1 (https://github.com/frenzy2004/FireWood)";
 
 interface NwsValue {
   validTime: string;
