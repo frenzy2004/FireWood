@@ -2,7 +2,7 @@
 
 EmberField is a local-first agriculture operations console for monitoring satellite-detected heat activity near farms, orchards, livestock areas, barns, storage sites, and field crews. It combines live NASA FIRMS VIIRS detections with National Weather Service conditions, AirNow air quality, WFIGS official wildfire context, and a locally running Gemma 4 12B agent.
 
-Gemma chooses from an allowlisted set of evidence tools, explains what changed, names missing data, and leaves a visible function-call trace. Coordinates, prompts, and operational notes stay on the operator's machine.
+Gemma chooses from an allowlisted set of evidence tools, explains current conditions and detected activity, names missing data, and leaves a visible function-call trace. Gemma prompts, inference, and asset notes stay off hosted AI services. Live public-source and map requests still send the geographic information those services need.
 
 > EmberField is informational context, not an evacuation tool or emergency-warning system. A FIRMS point is a satellite-detected heat anomaly, not a confirmed wildfire or its perimeter. Follow local officials and emergency services for safety decisions.
 
@@ -15,7 +15,7 @@ Gemma chooses from an allowlisted set of evidence tools, explains what changed, 
 - Adds wind, humidity, AQI, and nearby official incident context.
 - Computes an explainable context score with explicit missing-data gating.
 - Shows raw points, grouped activity, official perimeters, source freshness, and a 24-hour timeline.
-- Detects new groups, new satellite confirmation, resumed activity, material score changes, and official matches without alert spam.
+- Produces deduplicated in-console alerts during load or refresh for new groups, new satellite confirmation, resumed activity, material score changes, and official matches.
 - Runs Gemma 4 12B locally through Ollama native function calling.
 
 ## Prerequisites
@@ -26,7 +26,7 @@ Gemma chooses from an allowlisted set of evidence tools, explains what changed, 
 - A free [NASA FIRMS MAP_KEY](https://firms.modaps.eosdis.nasa.gov/api/map_key/)
 - An optional [AirNow API key](https://docs.airnowapi.org/)
 
-The map, Census geocoder, NWS, and WFIGS paths do not require application keys. Fixture mode works without any external credentials.
+The Census geocoder, NWS, WFIGS, and OpenStreetMap basemap do not require application keys. Fixture evidence works without external credentials, but map tiles still require network access.
 
 ## Local setup
 
@@ -41,12 +41,11 @@ Edit `.dev.vars` locally:
 FIRMS_MAP_KEY=your_firms_key
 AIRNOW_API_KEY=your_airnow_key
 OLLAMA_BASE_URL=http://127.0.0.1:11434
-OLLAMA_MODEL=gemma4:12b
 ```
 
 The file is ignored by Git. Never put credentials in browser code, source URLs, screenshots, or commits.
 
-Build once and initialize the local D1 database:
+Build once and apply the versioned local D1 migrations:
 
 ```bash
 npm run build
@@ -69,7 +68,7 @@ Open the local URL printed by Vinext. EmberField loads the Antelope Creek Ranch 
 
 ```bash
 npm run dev          # local Vinext and Cloudflare development server
-npm run db:local     # apply the generated schema to local D1 state
+npm run db:local     # apply versioned migrations to local D1 state
 npm run test:unit    # unit, route, agent, and UI tests
 npm run lint         # ESLint checks
 npm run build        # production Vinext build
@@ -82,7 +81,7 @@ Browser console
   -> same-origin API routes
      -> NASA FIRMS, NWS, AirNow, Census, WFIGS
      -> deterministic clustering, scoring, and alert rules
-     -> local Cloudflare D1 history
+     -> bounded local Cloudflare D1 snapshot history
      -> Ollama on 127.0.0.1
         -> Gemma 4 12B native function calls
         -> allowlisted EmberField evidence tools
@@ -92,8 +91,10 @@ The deterministic context engine owns measurements and scoring. Gemma owns tool 
 
 ## Live and fixture behavior
 
-- **Fixture** is a deterministic agriculture scenario with NASA-like detections, weather, AQI, and an official perimeter. It is clearly labeled and works offline after dependencies are installed.
+- **Fixture** is a deterministic virtual agriculture scenario with NASA-like detections, weather, AQI, and an official perimeter. It is clearly labeled, never persisted, and its evidence works without credentials; the basemap still needs network access.
 - **Live** calls the configured sources. Each source reports mode, status, fetched time, and observation time independently.
+- Saved non-demo assets are live-only. Successful refreshes persist bounded 24-hour run summaries, FIRMS detections, and enriched alert evidence to local D1.
+- Monitoring and alerts run only while the operator actively loads or refreshes the console. There is no background scheduler or outbound notification delivery.
 - Missing or failed weather and air-quality inputs reduce data confidence and produce `Limited data`. They are never treated as zero.
 - A valid empty FIRMS response means no detections were returned for that request. It does not prove there is no fire.
 - The agent receives bounded, redacted tool results. FIRMS and AirNow credential-bearing URLs are never returned to the browser or persisted.
@@ -121,6 +122,8 @@ The deterministic context engine owns measurements and scoring. Gemma owns tool 
 
 - [Judging narrative](docs/HACKATHON.md)
 - [Three-minute demo script](docs/DEMO-SCRIPT.md)
+- [Evidence-based self-evaluation](docs/SELF-EVALUATION.md)
+- [Release verification record](docs/VERIFICATION.md)
 
 ## License and data use
 

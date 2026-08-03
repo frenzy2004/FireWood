@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgentPanel } from "../app/components/AgentPanel";
 import { SetupPanel } from "../app/components/SetupPanel";
-import { applyReplayState } from "../app/components/TimelineDock";
+import { applyReplayState, FULL_REPLAY_STATE } from "../app/components/TimelineDock";
 import { type DashboardSnapshot, deriveConsoleAlerts } from "../app/hooks/use-dashboard";
 import { Dashboard } from "../app/page";
 
@@ -232,6 +232,27 @@ describe("EmberField console", () => {
     expect(replayed?.sources.firms?.fetchedAt).toBeNull();
     expect(replayed?.sources.nws?.observedAt).toBeNull();
     expect(replayed?.sources.nws?.fetchedAt).toBeNull();
+  });
+
+  it("preserves complete source freshness when the replay is at now", () => {
+    const liveSnapshot = {
+      ...snapshot,
+      mode: "live" as const,
+      sources: {
+        ...snapshot.sources,
+        firms: {
+          ...snapshot.sources.firms,
+          mode: "live" as const,
+          fetchedAt: "2026-08-03T12:00:01.000Z",
+        },
+      },
+    };
+
+    const replayed = applyReplayState(liveSnapshot, FULL_REPLAY_STATE);
+
+    expect(replayed?.sources.firms?.fetchedAt)
+      .toBe("2026-08-03T12:00:01.000Z");
+    expect(replayed?.sources.firms?.replayState).toBe("included");
   });
 
   it("shows health statuses, last refresh, and the agent offline state", async () => {

@@ -2,7 +2,7 @@
 
 ## One-line pitch
 
-EmberField gives farmers and rural operators a private, evidence-grounded early-context console for satellite heat activity near the places and people they care for.
+EmberField gives farmers and rural operators a local-inference, evidence-grounded early-context console for satellite heat activity near the places and people they care for.
 
 ## The problem
 
@@ -26,7 +26,7 @@ The app deliberately separates facts from interpretation:
 
 Gemma 4 12B is the primary intelligence in the operator workflow. A prompt such as "Brief me on the orchard and explain what changed" does not map to a hard-coded answer. Gemma uses native function calling to choose among allowlisted tools for farm assets, detection groups, weather, air quality, official incidents, the 24-hour timeline, and score explanations. It can gather more evidence over several rounds before synthesizing its response.
 
-Every call is schema-validated. The trace shows the tool, safe arguments, duration, source status, and a bounded result summary. This makes the agent inspectable during judging and useful when sources disagree or data is incomplete. The model and Ollama runtime stay on loopback, so farm coordinates, prompts, and notes do not go to a hosted model.
+Every call is schema-validated. The trace shows the tool, safe arguments, duration, source status, and a bounded result summary. This makes the agent inspectable during judging and useful when sources disagree or data is incomplete. The model and Ollama runtime stay on loopback, so prompts and asset notes do not go to a hosted model. Live evidence and map requests still send required coordinates, bounding areas, or addresses to the selected public service.
 
 ## Judging criteria
 
@@ -43,14 +43,14 @@ Every call is schema-validated. The trace shows the tool, safe arguments, durati
 - Reframes wildfire data around agriculture assets: fields, orchards, barns, livestock, crews, and storage.
 - Unifies five public evidence systems without presenting an unofficial prediction as authority.
 - Makes uncertainty visible through score ranges, completeness gates, freshness, and missing-input language.
-- Preserves local privacy for sensitive agricultural locations and operator notes.
+- Keeps prompts, model inference, and asset notes off hosted AI services while disclosing the geography sent to live public sources.
 - Gives rural users a coherent starting point while repeatedly directing safety decisions to officials.
 
 ### Functionality, 20%
 
 - Live and deterministic fixture modes.
 - Interactive map with raw detections, grouped activity, radius, incidents, and perimeters.
-- Address geocoding, direct coordinates, saved assets, and local D1 history.
+- Address geocoding, direct coordinates, saved assets, and bounded local D1 snapshot history.
 - Weather/downwind, humidity, AQI, WFIGS matching, explainable scoring, and deduplicated alert rules.
 - Replayable 24-hour detected-activity timeline.
 - Tested API boundaries, source parsing, geometry, clustering, scoring, persistence, UI states, and Gemma loop.
@@ -88,7 +88,7 @@ EmberField never claims that a FIRMS anomaly is a confirmed wildfire. It never t
 
 1. Switch between fixture and live source status without changing the meaning of the labels.
 2. Select an activity group and show distance, age, satellite passes, wind relation, humidity, AQI, official match, and score reasons.
-3. Ask Gemma for an orchard briefing and expand the native function-call trace.
+3. Ask Gemma to inspect the orchard, explain its current deterministic score, and summarize 24-hour detected activity; then expand the native function-call trace.
 4. Replay the 24-hour timeline and point out the careful phrase `change in detected activity`.
 5. End on local privacy and the persistent emergency-use disclaimer.
 

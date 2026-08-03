@@ -2,25 +2,35 @@
 
 Verification date: 2026-08-04 MYT
 
-Baseline commit: `db1bd9f`
+Baseline: final `feature/emberfield` release candidate
 
-This record separates committed baseline verification, live external-source observations, and final release work. External results can change at any time.
+This record separates deterministic verification, live external-source observations, and actual local-model evidence. External results can change at any time.
 
-Snapshot persistence and historical replay status: **IN PROGRESS OUTSIDE THIS DOCUMENT COMMIT.** Coordinator update: replace this line and rerun every release gate after that work lands.
+Snapshot persistence and historical replay status: **COMPLETE FOR THE LOCAL PROTOTYPE.** Saved live assets retain bounded run summaries, FIRMS detections, and enriched alerts. The virtual demo is never persisted.
 
-## 1. Clean committed baseline
-
-The active shared worktree contained unrelated in-progress hardening changes. To avoid treating that transient state as released behavior, baseline commit `db1bd9f` was exported to an isolated temporary directory and verified there.
+## 1. Final release candidate
 
 | Command | Recorded result |
 | --- | --- |
-| `npm test` | Passed: 11 test files, 139 tests |
+| `npm test` | Passed: 15 test files, 184 tests |
 | `npm run lint` | Passed with no ESLint findings |
 | `npm run build` | Passed; Vinext produced the app and six API routes |
+| `npm run db:local` | Passed; all versioned migrations applied, and the repeat run reported no pending migrations |
 
 The build emitted one non-blocking warning about client chunks larger than 500 kB after minification.
 
-The test suite covers source parsing, request timeouts and size limits, cache behavior, geometry, clustering, scoring, alert deduplication, source composition, repository behavior, API boundaries, Gemma tool orchestration, redaction, UI state, replay behavior, and accessibility-oriented interactions.
+The test suite covers source parsing, request timeouts and size limits, cache behavior, geometry and perimeter-radius intersection, clustering, scoring, alert deduplication, bounded persistence, source composition, repository behavior, API boundaries, Gemma tool orchestration and claim grounding, redaction, UI state, replay behavior, and accessibility-oriented interactions.
+
+Final desktop browser QA at 1280 by 720 verified:
+
+- fixture evidence and permanent limitation copy;
+- a saved live orchard with persisted history after reload and complete fetched/observed timestamps;
+- timeline restart synchronizing the map and inspector to zero visible detections at the 24-hour cutoff;
+- successful Census address normalization without saving the test address;
+- an actual grounded Gemma answer and expanded `inspect_asset` trace;
+- no error or warning entries in a fresh browser-tab log.
+
+Responsive tabs, focus handling, and narrow-layout behavior are covered by automated UI tests; a physical narrow-screen rehearsal is still advisable before judging.
 
 ## 2. Actual local Gemma proof
 
@@ -45,45 +55,36 @@ curl -sS http://127.0.0.1:11434/api/tags \
   | jq '.models[] | select(.name == "gemma4:12b") | {name, size, details, capabilities}'
 ```
 
-### Native function smoke test
+### Final native function proof
 
-A real local request using the same model, native tools field, non-streaming mode, and disabled thinking returned:
+A real request through `/api/agent` used the installed `gemma4:12b` model and completed in two rounds. Gemma selected native `inspect_asset`; the application returned a server-generated `trace-1`, evidence reference `1`, and the cited answer:
 
-```json
-{
-  "role": "assistant",
-  "content": "",
-  "tool": {
-    "name": "inspect_asset",
-    "arguments": {
-      "assetId": "orchard-1"
-    }
-  }
-}
+```text
+The active evidence mode for this ranch is fixture [evidence:1].
 ```
 
-The response completed in about five seconds, including about 3.4 seconds of model load time. The call identity was intentionally omitted from this record.
+The successful warm run completed in about 26.2 seconds and returned `persistenceStatus: not-persisted`. A separate cold or queued run reached the fixed 45 second timeout and returned the explicit warm-up fallback. Warm the model before judging.
 
-This proves that the installed model accepts the application's native function shape and chooses a structured tool. It does not by itself prove a full multi-round final briefing. Before judging, run the application flow and capture at least two visible real tool calls followed by an evidence-grounded answer.
+A broader live-orchard prompt also selected `inspect_asset` and received current live evidence, but the generated synthesis failed the conservative claim-level validator. The route returned the safe grounding fallback rather than exposing unsupported prose. The deterministic panels and visible tool result remain authoritative.
 
 ## 3. Sanitized live source proof
 
 No credential values, source URLs, or precise request coordinates are recorded here.
 
-### Combined live snapshot probe
+### Combined live saved-asset probe
 
-Recorded at `2026-08-03T16:12:48.941Z`:
+Recorded at `2026-08-03T16:52:16.992Z` for a local verification orchard with a 100 km radius:
 
 | Source | Mode and status | Observed result |
 | --- | --- | --- |
-| NASA FIRMS | live, ok | Three configured VIIRS feeds completed and returned a valid empty result: 0 detections and 0 groups; no observation timestamp was available |
-| AirNow | live, ok | Request completed, but no current PM2.5 observation was selected; no AQI or concentration claim is made |
-| WFIGS | live, ok | 1 incident and 0 perimeters; latest reported source update was `2026-08-03T03:45:46.930Z` |
-| NWS in combined snapshot | live, not-requested | No activity group existed, so group-level weather work was correctly skipped with coverage 0 of 0 |
+| NASA FIRMS | live, ok | 2 radius-filtered detections in 2 activity groups; latest observation `2026-08-03T10:15:00.000Z` |
+| NWS | live, ok | Weather context succeeded for both activity groups, coverage 2 of 2; selected observation time `2026-08-03T10:00:00.000Z` |
+| AirNow | live, ok | Current request and parser completed; selected observation time `2026-08-03T16:00:00.000Z` |
+| WFIGS | live, ok | 3 incidents and 1 asset-radius-intersecting perimeter; latest source update `2026-08-03T16:43:02.480Z` |
 
-A separate NWS probe for the same general demonstration area completed at `2026-08-03T16:13:01.428Z`. It returned an observation time of `2026-08-03T16:00:00.000Z` with wind speed, wind direction, and relative humidity present.
+The response reported exact-radius filtering, no truncation, and automated-alert eligibility. Two consecutive refreshes persisted as two local runs. Historical detections deduplicated to 2, enriched alert history remained at 4, and the unchanged second refresh emitted 0 new alerts.
 
-A successful empty response is evidence that a request completed, not evidence that no fire exists. The AirNow result is evidence of endpoint and parser behavior, not proof of current PM2.5 coverage at every asset.
+These counts are evidence for one place and time, not guaranteed coverage. A successful empty response elsewhere still means only that the request completed; it never proves absence of fire.
 
 ### Contract and composition tests
 
@@ -94,6 +95,8 @@ The recorded source tests verify:
 - AirNow returns an explicit missing-key state, rejects service-error payloads, preserves observation provenance, and selects the exact PM2.5 parameter when present.
 - WFIGS queries incident and perimeter layers with a bounded envelope and preserves nullable source dates without inventing an epoch timestamp.
 - Snapshot composition uses partial success, never substitutes fixture records into failed live data, reports NWS coverage, and strips credential-bearing FIRMS and AirNow URLs.
+- WFIGS is bounded to 500 incident features and 100 perimeter features with 1 MB and 2 MB response limits, plus per-feature and per-layer coordinate limits.
+- Saved snapshot history is asset- and mode-isolated, bounded to 48 runs and 8 MB of aggregate read material, and preflighted before persistence.
 
 These are deterministic contract tests with controlled upstream responses. They complement the live probe but do not replace it.
 
@@ -124,7 +127,8 @@ Manual release checks:
 - FIRMS and AirNow credentials are read server-side. Tests verify they are absent from client-facing source state and persisted source URLs.
 - Tool results and visible trace values are bounded and sanitized.
 - Live public-source calls still transmit the coordinate, bounding area, or address required for the selected service. Do not describe that traffic as fully offline.
-- The prototype has no public hosting, user accounts, cloud synchronization, or third-party notification provider.
+- The prototype has no public hosting, user accounts, cloud synchronization, background polling, or third-party notification provider.
+- Saved snapshot evidence is persisted locally; Gemma prompts, answers, and traces are not automatically persisted.
 
 Before a demo, inspect browser network responses and the expanded Gemma trace. Stop if any credential value or credential-bearing URL is visible.
 
@@ -162,7 +166,7 @@ Expected release evidence:
 - the production build exits successfully;
 - audit findings are either remediated or explicitly accepted for a local-only judging build;
 - `gemma4:12b` is installed on the presentation machine;
-- the local health route reports the model and configured sources without revealing credentials.
+- the local health route reports configured sources and verifies that the exact `gemma4:12b` inventory entry is available without revealing credentials.
 
 Then run `npm run dev` and manually verify:
 
@@ -173,7 +177,7 @@ Then run `npm run dev` and manually verify:
 5. Agent offline and timeout states preserve deterministic monitoring.
 6. The console works at desktop and narrow responsive widths with keyboard navigation.
 7. Browser console and network panels show no unexpected errors or credential-bearing values.
-8. The snapshot persistence and historical replay status line at the top of this file is updated only after its final tests pass.
+8. A saved live asset reports `persisted: true`, survives a reload with bounded history, and creates no duplicate alert on an unchanged second refresh.
 
 ## 8. Explicitly deferred
 
@@ -181,5 +185,6 @@ Then run `npm run dev` and manually verify:
 - SMS, email, mobile push, and desktop notification delivery;
 - native iOS or Android applications;
 - public hosting, accounts, team sharing, and cloud synchronization;
+- reconstruction of historical NWS grids, AirNow readings, or prior risk scores in replay;
 - production security certification, emergency-service integration, and field validation;
 - any claim that EmberField predicts spread, arrival, evacuation need, or official danger.

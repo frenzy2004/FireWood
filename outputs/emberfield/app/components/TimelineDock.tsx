@@ -47,10 +47,12 @@ function replaySourceState(
   enabled: boolean,
   observedAt: string | null,
   cutoffMs: number,
+  isTemporalReplay: boolean,
 ): SourceState {
   if (!enabled) {
     return { ...state, fetchedAt: null, observedAt: null, replayState: "excluded" };
   }
+  if (!isTemporalReplay) return { ...state, replayState: "included" };
   const fetchedAt = atOrBefore(state.fetchedAt, cutoffMs) ? state.fetchedAt : null;
   const filtered = fetchedAt !== state.fetchedAt || observedAt !== state.observedAt;
   return {
@@ -149,7 +151,16 @@ export function applyReplayState(
           : key === "airnow"
             ? visibleAirObservedAt
             : latestAtOrBefore([state.observedAt], cutoffMs);
-      return [key, replaySourceState(state, enabled, observedAt, cutoffMs)];
+      return [
+        key,
+        replaySourceState(
+          state,
+          enabled,
+          observedAt,
+          cutoffMs,
+          isTemporalReplay,
+        ),
+      ];
     }),
   );
   return {

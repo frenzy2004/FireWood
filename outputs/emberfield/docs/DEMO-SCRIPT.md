@@ -3,6 +3,7 @@
 ## Before presenting
 
 - Start Ollama and confirm `gemma4:12b` is available.
+- Warm the model once on the presentation machine; a cold local model can exceed the agent's 45 second budget.
 - Start EmberField with the ignored local keys present.
 - Keep Fixture selected for a repeatable opening, then show Live source freshness.
 - Preselect Antelope Creek Ranch and keep the Gemma trace collapsed.
@@ -29,11 +30,11 @@ Point to the score range, top reasons, missing inputs, and exact UTC timestamps.
 
 Ask:
 
-> Brief me on the selected orchard. Call the tools you need, name missing data, and explain why its context score changed.
+> Inspect the selected orchard. Explain its current deterministic context score and summarize detected activity in the last 24 hours. Cite every evidence claim.
 
 While Gemma runs, say:
 
-"This is the actual Gemma 4 12B model running through local Ollama. The prompt and farm coordinates stay on this machine. Gemma is not decorating a fixed report. It chooses from nine schema-validated tools, can gather evidence over several rounds, and must ground its answer in returned values."
+"This is the actual Gemma 4 12B model running through local Ollama. The prompt, inference, and asset notes stay off hosted AI services. Live tools still send the necessary geography to the selected public source. Gemma is not decorating a fixed report. It chooses from nine schema-validated tools, can gather evidence over several rounds, and must ground its answer in returned values."
 
 Expand the tool trace. Point out function names, validated arguments, duration, and source state. Read one concise sentence from the final briefing.
 
@@ -41,7 +42,7 @@ Expand the tool trace. Point out function names, validated arguments, duration, 
 
 Play the timeline.
 
-"The 24-hour replay combines acquisition times with weather and air-quality context. We call this a change in detected activity, not confirmed fire spread, because clouds, smoke, sensor schedules, and different satellites change what appears."
+"The 24-hour replay restores bounded FIRMS detections and alert evidence across saved refreshes. The current snapshot's NWS and AirNow observations are shown only when their timestamps are at or before the replay cutoff; this prototype does not reconstruct past weather, AQI, or risk scores. We call this a change in detected activity, not confirmed fire spread."
 
 Toggle one satellite source and scrub to an earlier time.
 
@@ -49,7 +50,7 @@ Toggle one satellite source and scrub to an earlier time.
 
 Switch to Live and refresh.
 
-"Live mode requests NASA FIRMS, the National Weather Service, AirNow, and WFIGS. Every source keeps its own observation and fetch time. A source can fail independently without erasing the evidence we do have."
+"Live mode requests NASA FIRMS, AirNow, and WFIGS, then requests National Weather Service context for each activity group. If FIRMS returns no groups, NWS is correctly marked not requested. Every source keeps its own observation and fetch time, and one source can fail without erasing valid evidence from the others."
 
 If the live query is empty, say that it is a valid current result and does not prove the absence of fire.
 

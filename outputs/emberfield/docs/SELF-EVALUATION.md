@@ -2,7 +2,7 @@
 
 Evaluation date: 2026-08-04 MYT
 
-Evaluated baseline: commit `db1bd9f`
+Evaluated baseline: final `feature/emberfield` release candidate
 
 This is a self-assessment, not a predicted judge score. It separates demonstrated behavior from planned work and applies deductions where proof is incomplete.
 
@@ -10,18 +10,18 @@ This is a self-assessment, not a predicted judge score. It separates demonstrate
 
 | Criterion | Weight | Self-score | Evidence in the prototype | Main deductions |
 | --- | ---: | ---: | --- | --- |
-| Gemma Integration | 30 | 23 | Actual local `gemma4:12b`, native Ollama tool calls, nine schema-validated evidence tools, bounded multi-round loop, visible trace, deterministic source context | No recorded full real-model multi-round briefing in the final verification set; claim-level grounding remains a guardrail rather than formal proof; one 45 second budget can be tight after a cold model load |
+| Gemma Integration | 30 | 23 | Actual local `gemma4:12b`, native Ollama tool calls, nine schema-validated evidence tools, bounded multi-round loop, visible trace, deterministic source context | Claim-level grounding remains a guardrail rather than formal proof; the 45 second budget can be tight after a cold or queued model run; complex prose can be safely rejected |
 | Innovation and Impact | 30 | 25 | Agriculture asset framing, five public evidence systems, explainable context rather than a spread prediction, local AI inference, explicit uncertainty | No grower field study, extension-service validation, or measured outcome data; live evidence coverage varies by place and time |
-| Functionality | 20 | 15 | Live and fixture modes, map, saved assets, Census lookup, clustering, scoring, in-console alerts, replay, source freshness, Gemma agent | Background polling and outbound alerts are not implemented; historical snapshot persistence is still in progress; live probes can validly return sparse evidence |
+| Functionality | 20 | 16 | Live and fixture modes, map, saved assets, Census lookup, clustering, scoring, persisted in-console alerts, bounded replay, source freshness, Gemma agent | Background polling and outbound alerts are not implemented; replay does not reconstruct historical weather, AQI, or scores; live evidence can validly be sparse |
 | Presentation and Writeup | 20 | 16 | Coherent operations console, fixture story, permanent safety copy, visible tool trace, judging narrative, three-minute script | No public demo, mobile app, submitted video, or external usability review is included in this repository |
-| **Total** | **100** | **79** | | |
+| **Total** | **100** | **80** | | |
 
 ## Gemma Integration: 23 of 30
 
 ### Demonstrated
 
 - Ollama 0.32.5 reports a locally installed `gemma4:12b` model with an 11.9B parameter family, Q4_K_M quantization, and native tool capability.
-- A real local `/api/chat` smoke test returned a native `inspect_asset` function call with the requested asset argument. This was not a mocked model response.
+- A final real local agent run completed in two rounds: `gemma4:12b` selected native `inspect_asset`, then returned a cited fixture-mode answer. The route reported `persistenceStatus: not-persisted`; this was not a mocked model response.
 - The application exposes nine agriculture evidence tools for assets, activity groups, refresh, weather, air quality, official incidents, timeline evidence, and deterministic assessment explanations.
 - Tool arguments are schema-validated. Results are bounded and sanitized before entering model history or the visible trace.
 - Gemma chooses tools and synthesizes the briefing. Deterministic code retains ownership of distances, clustering, score contributions, and alert rules.
@@ -29,9 +29,9 @@ This is a self-assessment, not a predicted judge score. It separates demonstrate
 
 ### Deductions
 
-- The recorded real-model proof demonstrates native function selection, not a complete multi-round live-source briefing. A final demo rehearsal should capture at least two real tool calls and the resulting visible answer.
+- The recorded successful real-model proof is deliberately narrow. A broader live-source prompt also exercised native inspection, but its generated prose failed the claim-level validator and was replaced with the safe grounding fallback.
 - Claim-level lexical grounding reduces unsupported prose, but it is not a formal verifier. It can still require hardening for unsupported generic claims and can reject legitimate paraphrases. The deterministic panels and source trace remain the authoritative evidence surface.
-- The agent uses one 45 second budget for model work, tools, and persistence. The observed native call completed in about five seconds on this machine, including a cold load, but slower hardware or a more complex turn can time out.
+- The agent uses one 45 second budget for model work and tools. The final successful warm run completed in about 26.2 seconds. A cold or queued run did reach the timeout, so the presentation checklist includes a model warm-up.
 
 ## Innovation and Impact: 25 of 30
 
@@ -50,15 +50,17 @@ This is a self-assessment, not a predicted judge score. It separates demonstrate
 - The context score is a transparent comparison aid, not a validated agronomic or wildfire prediction model.
 - The prototype has not measured faster decisions, reduced losses, or alert precision in operational use.
 
-## Functionality: 15 of 20
+## Functionality: 16 of 20
 
 ### Demonstrated
 
-- A clean export of baseline commit `db1bd9f` passed 139 tests across 11 files, passed ESLint, and completed the production build.
-- Live source probes on 2026-08-03 UTC returned successful FIRMS, AirNow, WFIGS, and NWS responses. The result was honestly sparse: FIRMS returned zero detections, AirNow returned no current PM2.5 observation, WFIGS returned one incident and no perimeter, and NWS separately returned wind, direction, and humidity.
+- The final candidate passed 184 tests across 15 files, passed ESLint, and completed the production build. The build retains one non-blocking large-client-chunk warning.
+- A fresh saved-orchard probe on 2026-08-03 UTC returned 2 live FIRMS detections in 2 groups, successful NWS context for both groups, current AirNow evidence, 3 WFIGS incidents, and 1 intersecting perimeter. Results are time- and place-dependent.
+- Two live refreshes persisted as two bounded local runs. Historical detections deduplicated to two and four enriched alerts remained stable; the second unchanged refresh created no new alerts.
 - Fixture mode supplies a deterministic, clearly labeled story for repeatable judging.
 - The UI supports exact 1 to 100 km asset radii, address lookup cancellation, stable cluster identity, replay cutoffs, source freshness, mode-safe summaries, and stale-response protection.
 - The map and inspector retain raw detections and present grouped activity, official context, score reasons, missing inputs, and UTC timestamps.
+- Saved non-demo assets are live-only. The virtual demo supports fixture or live evidence but is never persisted.
 
 ### Deductions and deferred scope
 
@@ -67,7 +69,8 @@ This is a self-assessment, not a predicted judge score. It separates demonstrate
 - There is no native mobile application.
 - Public hosting, accounts, multi-user authorization, and cloud synchronization are deferred.
 - This is not an evacuation, dispatch, firefighting, or emergency-warning system.
-- Snapshot persistence and historical replay status: **IN PROGRESS OUTSIDE THIS DOCUMENT COMMIT.** Coordinator update: replace this line only after the migration, repository behavior, routes, and tests land and pass.
+- The restored 24-hour history contains run summaries, FIRMS detections, and enriched alerts. It does not reconstruct prior NWS grids, AirNow readings, or historical risk scores.
+- Retention pruning is best-effort local maintenance, not a guaranteed secure-deletion deadline.
 
 ## Presentation and Writeup: 16 of 20
 
@@ -78,12 +81,13 @@ This is a self-assessment, not a predicted judge score. It separates demonstrate
 - Permanent copy states the key FIRMS, pixel, acreage, spread, air-quality, and emergency-use limitations.
 - `docs/HACKATHON.md` provides the judging narrative and `docs/DEMO-SCRIPT.md` provides a timed three-minute walkthrough.
 - Responsive tabs, keyboard navigation, focus handling, loading states, retained-evidence errors, and agent offline states have automated coverage.
+- A final desktop browser rehearsal verified fixture and live views, local history after reload, complete source freshness, replay synchronization, Census lookup, an actual grounded Gemma response with expanded native trace, and a clean fresh-tab error log.
 
 ### Deductions
 
 - The repository does not contain a final pitch video or recorded end-to-end demo.
 - There is no publicly hosted judge URL because the chosen delivery is local-only.
-- A final browser rehearsal on the presentation machine is still required for map rendering, responsive layout, live credentials, and actual Gemma latency.
+- The final browser rehearsal used a desktop viewport. A physical narrow-screen rehearsal remains advisable before judging even though responsive behavior has automated coverage.
 - The current production build reports a large-chunk warning. It does not block the local demo, but it remains a performance cleanup item.
 
 ## Safety and privacy boundaries
@@ -95,6 +99,7 @@ This is a self-assessment, not a predicted judge score. It separates demonstrate
 - Missing weather or air-quality evidence is labeled and reduces confidence.
 - Users are directed to local emergency officials and NWS alerts for safety decisions.
 - Gemma runs through loopback Ollama. Prompts are not sent to a hosted model.
+- Prompts, answers, and traces are not automatically persisted.
 - Live public-source calls do receive the coordinates, area, or address needed to answer the request.
 - Source credentials are server-side and must never appear in browser payloads, screenshots, traces, or committed files.
 
