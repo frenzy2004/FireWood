@@ -277,6 +277,52 @@ describe("snapshot composition", () => {
     expect(snapshot.groups).toHaveLength(1);
   });
 
+  it("excludes official perimeters whose geometry does not intersect the asset radius", async () => {
+    const outsidePerimeter = {
+      ...wfigsPayload.perimeters[0],
+      id: "outside-radius",
+      geometry: {
+        type: "Polygon" as const,
+        coordinates: [[
+          [-116.56, 41.48],
+          [-116.52, 41.48],
+          [-116.52, 41.49],
+          [-116.56, 41.49],
+          [-116.56, 41.48],
+        ]],
+      },
+    };
+    const snapshot = await buildSnapshot(
+      { asset: DEMO_ASSET, bbox: DEMO_BBOX, mode: "live" },
+      {
+        now: () => now,
+        config: {
+          firms: { mapKey: "configured" },
+          airnow: { apiKey: "" },
+          ollama: { baseUrl: "http://127.0.0.1:11434", model: "gemma4:12b" },
+        },
+        fetchFirms: async () => ({ ...firmsPayload, detections: [] }),
+        fetchWeather: async () => weatherPayload,
+        fetchAir: async () => ({
+          mode: "live",
+          status: "missing-key",
+          source: "AirNow",
+          fetchedAt: now.toISOString(),
+          observedAt: null,
+          observations: [],
+          air: null,
+        }),
+        fetchWfigs: async () => ({
+          ...wfigsPayload,
+          perimeters: [...wfigsPayload.perimeters, outsidePerimeter],
+        }),
+      },
+    );
+
+    expect(snapshot.perimeters.map(({ id }) => id)).toEqual(["perimeter-1"]);
+    expect(snapshot.limits?.exactRadiusApplied).toBe(true);
+  });
+
   it("bounds NWS work to four concurrent cluster lookups", async () => {
     let active = 0;
     let maximumActive = 0;
@@ -374,6 +420,37 @@ describe("snapshot composition", () => {
     });
     expect(snapshot.sources.firms.status).toBe("partial");
     expect(snapshot.sources.wfigs.status).toBe("partial");
+    expect(snapshot.groups.every(({ assessment }) => !assessment.canAutomateAlerts))
+      .toBe(true);
+  });
+
+  it("disables automated alerts when an upstream WFIGS page is partial", async () => {
+    const snapshot = await buildSnapshot(
+      { asset: DEMO_ASSET, bbox: DEMO_BBOX, mode: "live" },
+      {
+        now: () => now,
+        config: {
+          firms: { mapKey: "configured" },
+          airnow: { apiKey: "" },
+          ollama: { baseUrl: "http://127.0.0.1:11434", model: "gemma4:12b" },
+        },
+        fetchFirms: async () => firmsPayload,
+        fetchWeather: async () => weatherPayload,
+        fetchAir: async () => ({
+          mode: "live",
+          status: "missing-key",
+          source: "AirNow",
+          fetchedAt: now.toISOString(),
+          observedAt: null,
+          observations: [],
+          air: null,
+        }),
+        fetchWfigs: async () => ({ ...wfigsPayload, status: "partial" }),
+      },
+    );
+
+    expect(snapshot.sources.wfigs.status).toBe("partial");
+    expect(snapshot.limits?.alertsAutomated).toBe(false);
     expect(snapshot.groups.every(({ assessment }) => !assessment.canAutomateAlerts))
       .toBe(true);
   });

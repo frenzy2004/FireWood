@@ -279,6 +279,51 @@ export function geometryContains(
     : geometry.coordinates.some((polygon) => polygonContains(point, polygon));
 }
 
+function perimeterRings(geometry: WfigsGeometry): number[][][] {
+  return geometry.type === "Polygon"
+    ? geometry.coordinates
+    : geometry.coordinates.flatMap((polygon) => polygon);
+}
+
+function segmentDistanceKm(
+  point: { lat: number; lon: number },
+  left: number[],
+  right: number[],
+): number {
+  const latitudeScale = 111.32;
+  const longitudeScale =
+    latitudeScale * Math.cos((point.lat * Math.PI) / 180);
+  const leftX = (left[0] - point.lon) * longitudeScale;
+  const leftY = (left[1] - point.lat) * latitudeScale;
+  const deltaX = (right[0] - left[0]) * longitudeScale;
+  const deltaY = (right[1] - left[1]) * latitudeScale;
+  const squaredLength = deltaX * deltaX + deltaY * deltaY;
+  const fraction = squaredLength === 0
+    ? 0
+    : Math.max(
+        0,
+        Math.min(1, -(leftX * deltaX + leftY * deltaY) / squaredLength),
+      );
+  return Math.hypot(
+    leftX + fraction * deltaX,
+    leftY + fraction * deltaY,
+  );
+}
+
+export function geometryIntersectsRadius(
+  point: { lat: number; lon: number },
+  radiusKm: number,
+  geometry: WfigsGeometry,
+): boolean {
+  if (geometryContains(point, geometry)) return true;
+  return perimeterRings(geometry).some((ring) =>
+    ring.some((coordinate, index) => {
+      const next = ring[(index + 1) % ring.length];
+      return Boolean(next) && segmentDistanceKm(point, coordinate, next) <= radiusKm;
+    }),
+  );
+}
+
 function matchIncident(
   cluster: ActivityCluster,
   incidents: WfigsIncident[],
@@ -448,7 +493,14 @@ export async function buildSnapshot(
   );
   const incidents = radiusIncidents.slice(0, SNAPSHOT_LIMITS.incidents);
   const rawPerimeters = wfigs?.perimeters ?? [];
-  const perimeters = boundedPerimeters(rawPerimeters);
+  const radiusPerimeters = rawPerimeters.filter((perimeter) =>
+    geometryIntersectsRadius(
+      input.asset.location,
+      input.asset.radiusKm,
+      perimeter.geometry,
+    ),
+  );
+  const perimeters = boundedPerimeters(radiusPerimeters);
   const allClusters = clusterDetections(detections, {
     maxDistanceKm: 1.5,
     maxGapHours: 6,
@@ -458,8 +510,9 @@ export async function buildSnapshot(
   if (radiusDetections.length > detections.length) truncated.push("detections");
   if (allClusters.length > clusters.length) truncated.push("groups");
   if (radiusIncidents.length > incidents.length) truncated.push("incidents");
-  if (rawPerimeters.length > perimeters.length) truncated.push("perimeters");
-  const alertsAutomated = truncated.length === 0;
+  if (radiusPerimeters.length > perimeters.length) truncated.push("perimeters");
+  const sourcePagesComplete =
+    firms?.status !== "partial" && wfigs?.status !== "partial";
 
   const fetchWeather = dependencies.fetchWeather ?? fetchWeatherContext;
   const weatherResults = await settleWithConcurrency(
@@ -473,6 +526,13 @@ export async function buildSnapshot(
     dependencies.signal,
   );
   dependencies.signal?.throwIfAborted();
+  const weatherSuccesses = weatherResults.flatMap((result) =>
+    result.status === "fulfilled" ? [result.value] : [],
+  );
+  const alertsAutomated =
+    truncated.length === 0 &&
+    sourcePagesComplete &&
+    weatherSuccesses.length === weatherResults.length;
   const groups = clusters.map((cluster, index) => {
     const result = weatherResults[index];
     const weather = result?.status === "fulfilled" ? result.value.weather : null;
@@ -484,9 +544,6 @@ export async function buildSnapshot(
     };
     return alertsAutomated ? group : disabledAutomation(group);
   });
-  const weatherSuccesses = weatherResults.flatMap((result) =>
-    result.status === "fulfilled" ? [result.value] : [],
-  );
   const weatherCoverage: SnapshotSourceCoverage = {
     succeeded: weatherSuccesses.length,
     failed: weatherResults.length - weatherSuccesses.length,

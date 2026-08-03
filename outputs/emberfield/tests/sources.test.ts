@@ -611,8 +611,10 @@ describe("live source adapters", () => {
     expect(requested).toHaveLength(2);
     expect(requested.every((url) => url.searchParams.get("geometry") === "-117.19,40.6,-115.89,41.5"))
       .toBe(true);
-    expect(requested.every((url) => url.searchParams.get("resultRecordCount") === "2000"))
-      .toBe(true);
+    expect(requested.find((url) => url.pathname.includes("Incident_Locations"))
+      ?.searchParams.get("resultRecordCount")).toBe("500");
+    expect(requested.find((url) => url.pathname.includes("Perimeters"))
+      ?.searchParams.get("resultRecordCount")).toBe("100");
   });
 
   it("stops WFIGS at one bounded page per layer and reports possible truncation", async () => {
@@ -623,9 +625,10 @@ describe("live source adapters", () => {
       const source = url.pathname.includes("Incident_Locations")
         ? wfigsPoints
         : wfigsPerimeters;
+      const layerLimit = url.pathname.includes("Incident_Locations") ? 500 : 100;
       return Response.json({
         ...source,
-        features: Array.from({ length: 2_000 }, (_, index) => ({
+        features: Array.from({ length: layerLimit }, (_, index) => ({
           ...source.features[0],
           id: index,
         })),
@@ -647,5 +650,20 @@ describe("live source adapters", () => {
 
     expect(result.status).toBe("partial");
     expect(requested).toHaveLength(2);
+  });
+
+  it("rejects a WFIGS perimeter before normalizing more than ten thousand coordinates", () => {
+    const oversized = structuredClone(wfigsPerimeters) as typeof wfigsPerimeters;
+    oversized.features[0].geometry.coordinates = [[
+      ...Array.from({ length: 10_001 }, (_, index) => [
+        -116.56 + index * 0.000001,
+        41.04,
+      ]),
+      [-116.56, 41.04],
+    ]];
+
+    expect(() => parseWfigsGeoJson(oversized, "perimeters")).toThrow(
+      "WFIGS perimeter geometry exceeds the coordinate limit",
+    );
   });
 });

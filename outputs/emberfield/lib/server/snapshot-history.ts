@@ -28,7 +28,14 @@ export interface CompactSnapshotHistory {
     groupCount: number;
   }>;
   detections: Snapshot["detections"];
-  alerts: Alert[];
+  alerts: CompactHistoryAlert[];
+}
+
+export interface CompactHistoryAlert extends Alert {
+  acquiredAt: string;
+  distanceKm: number;
+  confidence: Snapshot["detections"][number]["confidence"];
+  source: string;
 }
 
 const fingerprintSet = (group: SnapshotGroup): Set<string> =>
@@ -139,6 +146,33 @@ const detectionIdentity = (detection: Snapshot["detections"][number]): string =>
   ].join("|");
 };
 
+function alertWithEvidence(
+  run: StoredSnapshotRun,
+  alert: Alert,
+): CompactHistoryAlert | null {
+  if (alert.assetId !== run.assetId) return null;
+  const group = run.snapshot.groups.find(
+    (candidate) => candidate.cluster.id === alert.clusterId,
+  );
+  if (!group) return null;
+  const evaluatedAt = Date.parse(alert.updatedAt);
+  const detections = [...group.cluster.detections].sort(
+    (left, right) => right.acquiredAt.localeCompare(left.acquiredAt),
+  );
+  const detection = Number.isFinite(evaluatedAt)
+    ? detections.find(({ acquiredAt }) => Date.parse(acquiredAt) <= evaluatedAt)
+    : undefined;
+  if (!detection) return null;
+  const source = detection.source ?? run.snapshot.sources.firms.source;
+  return {
+    ...alert,
+    acquiredAt: detection.acquiredAt,
+    distanceKm: distanceKm(run.snapshot.asset.location, group.cluster.centroid),
+    confidence: detection.confidence,
+    source: `${source}: ${detection.satellite}`,
+  };
+}
+
 export function compactSnapshotHistory(
   allRuns: StoredSnapshotRun[],
   since: string,
@@ -155,11 +189,15 @@ export function compactSnapshotHistory(
     }
     if (detectionMap.size >= MAXIMUM_HISTORY_DETECTIONS) break;
   }
-  const alertMap = new Map<string, Alert>();
-  for (const alert of runs.flatMap(({ alerts }) => alerts)) {
-    const existing = alertMap.get(alert.dedupeKey);
-    if (!existing || alert.updatedAt > existing.updatedAt) {
-      alertMap.set(alert.dedupeKey, alert);
+  const alertMap = new Map<string, CompactHistoryAlert>();
+  for (const run of runs) {
+    for (const alert of run.alerts) {
+      const enriched = alertWithEvidence(run, alert);
+      if (!enriched) continue;
+      const existing = alertMap.get(alert.dedupeKey);
+      if (!existing || alert.updatedAt > existing.updatedAt) {
+        alertMap.set(alert.dedupeKey, enriched);
+      }
     }
   }
 

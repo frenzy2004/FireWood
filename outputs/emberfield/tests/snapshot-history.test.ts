@@ -94,7 +94,8 @@ class RunDatabase implements D1DatabaseLike {
   all(query: string, values: unknown[]): Row[] {
     const sql = query.replace(/\s+/g, " ").trim();
     if (!sql.includes("FROM snapshot_runs")) return [];
-    const [assetId, mode, since, limit] = values;
+    const [assetId, mode, since, maximumRunBytes, maximumHistoryBytes, limit] = values;
+    let cumulativeBytes = 0;
     return this.runs
       .filter(
         (run) =>
@@ -103,6 +104,18 @@ class RunDatabase implements D1DatabaseLike {
           String(run.generated_at) >= String(since),
       )
       .sort((left, right) => String(right.generated_at).localeCompare(String(left.generated_at)))
+      .map((run) => {
+        const byteSize = new TextEncoder().encode(
+          String(run.snapshot_json) + String(run.alerts_json),
+        ).byteLength;
+        return { ...run, byte_size: byteSize };
+      })
+      .filter((run) => Number(run.byte_size) <= Number(maximumRunBytes))
+      .map((run) => {
+        cumulativeBytes += Number(run.byte_size);
+        return { ...run, cumulativeBytes };
+      })
+      .filter((run) => run.cumulativeBytes <= Number(maximumHistoryBytes))
       .slice(0, Number(limit));
   }
 }
@@ -194,10 +207,10 @@ function snapshot(assetId: string, generatedAt: string, clusterId = "current-clu
 describe("snapshot history migration", () => {
   it("upgrades a seeded 0000 database without destroying existing rows", () => {
     const migrationDirectory = join(process.cwd(), "drizzle");
-    const migration = readdirSync(migrationDirectory)
-      .filter((name) => /^0001_.*\.sql$/.test(name))
-      .sort()[0];
-    expect(migration).toBeDefined();
+    const migrations = readdirSync(migrationDirectory)
+      .filter((name) => /^000[1-9]_.*\.sql$/.test(name))
+      .sort();
+    expect(migrations.length).toBeGreaterThan(0);
 
     const directory = mkdtempSync(join(tmpdir(), "emberfield-migration-"));
     temporaryDirectories.push(directory);
@@ -206,16 +219,24 @@ describe("snapshot history migration", () => {
       .replaceAll("--> statement-breakpoint", "");
     execFileSync("/usr/bin/sqlite3", [database], { input: initialSql });
     execFileSync("/usr/bin/sqlite3", [database], {
-      input: `INSERT INTO assets VALUES ('seed','Seed','field',1,2,10,NULL,'2026-08-03T00:00:00.000Z','2026-08-03T00:00:00.000Z');`,
+      input: `INSERT INTO assets VALUES ('seed','Seed','field',1,2,160.934,NULL,'2026-08-03T00:00:00.000Z','2026-08-03T00:00:00.000Z');`,
     });
-    const upgradeSql = readFileSync(join(migrationDirectory, migration), "utf8")
-      .replaceAll("--> statement-breakpoint", "");
-    execFileSync("/usr/bin/sqlite3", [database], { input: upgradeSql });
+    for (const migration of migrations) {
+      const upgradeSql = readFileSync(join(migrationDirectory, migration), "utf8")
+        .replaceAll("--> statement-breakpoint", "");
+      execFileSync("/usr/bin/sqlite3", [database], { input: upgradeSql });
+    }
 
     expect(execFileSync("/usr/bin/sqlite3", [database, "SELECT count(*) FROM assets;"]).toString().trim())
       .toBe("1");
     expect(execFileSync("/usr/bin/sqlite3", [database, "SELECT count(*) FROM snapshot_runs;"]).toString().trim())
       .toBe("0");
+    expect(execFileSync("/usr/bin/sqlite3", [database, "SELECT radius_km FROM assets WHERE id = 'seed';"]).toString().trim())
+      .toBe("100.0");
+    expect(() => execFileSync("/usr/bin/sqlite3", [database], {
+      input: `INSERT INTO assets VALUES ('invalid','Invalid','field',1,2,101,NULL,'2026-08-03T00:00:00.000Z','2026-08-03T00:00:00.000Z');`,
+      stdio: "pipe",
+    })).toThrow();
   });
 });
 
@@ -244,6 +265,31 @@ describe("run-scoped snapshot history", () => {
     expect(history).toHaveLength(1);
     expect(history[0]).toMatchObject({ assetId: "asset-a", mode: "fixture" });
     expect(JSON.stringify(history)).not.toContain("secret");
+  });
+
+  it("loads full history rows only while their aggregate payload stays within eight megabytes", async () => {
+    const database = new RunDatabase();
+    const repository = new AssetRepository(database, {
+      now: () => new Date("2026-08-03T12:00:00.000Z"),
+    });
+    for (let index = 0; index < 10; index += 1) {
+      const run = snapshot(
+        "asset-a",
+        new Date(Date.parse("2026-08-03T12:00:00.000Z") - index * 60_000).toISOString(),
+      );
+      run.asset.name = `Run ${index} ${"x".repeat(900_000)}`;
+      await repository.saveSnapshotRun(run);
+    }
+
+    const history = await repository.loadSnapshotHistory(
+      "asset-a",
+      "fixture",
+      "2026-08-02T12:00:00.000Z",
+    );
+
+    expect(history.reduce((bytes, run) => bytes + run.byteSize, 0))
+      .toBeLessThanOrEqual(8_000_000);
+    expect(history.length).toBeGreaterThan(0);
   });
 
   it("never submits more than 100 statements in one legacy D1 batch", async () => {
@@ -294,7 +340,7 @@ describe("run-scoped snapshot history", () => {
       assetId: "asset-a",
       mode: "fixture" as const,
       generatedAt: new Date(Date.parse("2026-08-03T12:00:00.000Z") - index * 60_000).toISOString(),
-      snapshot: snapshot("asset-a", "2026-08-03T12:00:00.000Z"),
+      snapshot: snapshot("asset-a", "2026-08-03T12:00:00.000Z", "track-a"),
       alerts,
       byteSize: 1_000,
       createdAt: "2026-08-03T12:00:00.000Z",
@@ -305,5 +351,42 @@ describe("run-scoped snapshot history", () => {
     expect(compact.runs).toHaveLength(48);
     expect(compact.alerts).toHaveLength(200);
     expect(compact.runs[0]).not.toHaveProperty("snapshot");
+  });
+
+  it("hydrates each compact alert with evidence from the run that produced it", () => {
+    const storedSnapshot = snapshot(
+      "asset-a",
+      "2026-08-03T11:30:00.000Z",
+      "track-a",
+    );
+    const alert: Alert = {
+      id: "alert-evidence",
+      type: "new-cluster",
+      assetId: "asset-a",
+      clusterId: "track-a",
+      dedupeKey: "asset-a:fixture:track-a:new-cluster",
+      createdAt: "2026-08-03T11:30:00.000Z",
+      updatedAt: "2026-08-03T11:30:00.000Z",
+      message: "New activity",
+    };
+
+    const compact = compactSnapshotHistory([{
+      id: "run-evidence",
+      assetId: "asset-a",
+      mode: "fixture",
+      generatedAt: storedSnapshot.generatedAt,
+      snapshot: storedSnapshot,
+      alerts: [alert],
+      byteSize: 1_000,
+      createdAt: storedSnapshot.generatedAt,
+    }], "2026-08-02T12:00:00.000Z");
+
+    expect(compact.alerts[0]).toMatchObject({
+      dedupeKey: alert.dedupeKey,
+      acquiredAt: "2026-08-03T11:30:00.000Z",
+      confidence: "high",
+      source: "fixture:VIIRS_NOAA20_NRT: NOAA-20",
+    });
+    expect(compact.alerts[0].distanceKm).toBeCloseTo(0.35, 1);
   });
 });

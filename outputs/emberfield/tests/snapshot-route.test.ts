@@ -42,6 +42,7 @@ class RouteStatement implements D1PreparedStatementLike {
 
 class RouteDatabase implements D1DatabaseLike {
   readonly runs: Row[] = [];
+  failPrune = false;
   readonly asset: Row = {
     id: "saved-asset",
     name: "Canonical saved ranch",
@@ -76,6 +77,10 @@ class RouteDatabase implements D1DatabaseLike {
         byte_size: byteSize,
         created_at: createdAt,
       });
+      return;
+    }
+    if (sql.startsWith("DELETE FROM snapshot_runs") && this.failPrune) {
+      throw new Error("simulated prune failure");
     }
   }
 
@@ -85,7 +90,8 @@ class RouteDatabase implements D1DatabaseLike {
       return values[0] === this.asset.id ? [this.asset] : [];
     }
     if (sql.includes("FROM snapshot_runs")) {
-      const [assetId, mode, since, limit] = values;
+      const [assetId, mode, since, maximumRunBytes, maximumHistoryBytes, limit] = values;
+      let cumulativeBytes = 0;
       return this.runs
         .filter(
           (run) =>
@@ -93,27 +99,82 @@ class RouteDatabase implements D1DatabaseLike {
             run.mode === mode &&
             String(run.generated_at) >= String(since),
         )
+        .sort((left, right) => String(right.generated_at).localeCompare(String(left.generated_at)))
+        .map((run) => {
+          const byteSize = new TextEncoder().encode(
+            String(run.snapshot_json) + String(run.alerts_json),
+          ).byteLength;
+          return { ...run, byte_size: byteSize };
+        })
+        .filter((run) => Number(run.byte_size) <= Number(maximumRunBytes))
+        .map((run) => {
+          cumulativeBytes += Number(run.byte_size);
+          return { ...run, cumulativeBytes };
+        })
+        .filter((run) => run.cumulativeBytes <= Number(maximumHistoryBytes))
         .slice(0, Number(limit));
     }
     return [];
   }
 }
 
-const snapshotRequest = () =>
+const snapshotRequest = (mode: "fixture" | "live" = "fixture") =>
   new Request("http://localhost/api/snapshot", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       assetId: "saved-asset",
-      mode: "fixture",
+      mode,
       refresh: true,
     }),
   });
 
+const savedLiveSnapshotBuilder = () =>
+  vi.fn<typeof buildSnapshot>(async (input, dependencies) => {
+    const fixture = await buildSnapshot(
+      { ...input, mode: "fixture" },
+      dependencies,
+    );
+    const liveState = (state: (typeof fixture.sources)[keyof typeof fixture.sources]) => ({
+      ...state,
+      mode: "live" as const,
+    });
+    return {
+      ...fixture,
+      mode: "live",
+      sources: {
+        firms: liveState(fixture.sources.firms),
+        nws: liveState(fixture.sources.nws),
+        airnow: liveState(fixture.sources.airnow),
+        wfigs: liveState(fixture.sources.wfigs),
+      },
+    };
+  });
+
 describe("saved asset snapshot route", () => {
-  it("uses canonical D1 identity, persists refreshes, and returns compact readback", async () => {
+  it("rejects fixture mode for a saved asset before demo geography can be attributed to it", async () => {
     const database = new RouteDatabase();
     const snapshotBuilder = vi.fn(buildSnapshot);
+    const handler = createSnapshotPostHandler({
+      database,
+      environment: {},
+      limiter: new LocalWorkLimiter({ maximumConcurrent: 1 }),
+      snapshotBuilder,
+    });
+
+    const response = await handler(snapshotRequest());
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "Fixture mode is available only for the virtual demo asset",
+    });
+    expect(snapshotBuilder).not.toHaveBeenCalled();
+    expect(database.runs).toHaveLength(0);
+  });
+
+  it("uses canonical D1 identity, persists refreshes, and returns compact readback", async () => {
+    const database = new RouteDatabase();
+    const snapshotBuilder = savedLiveSnapshotBuilder();
     const createHandler = () =>
       createSnapshotPostHandler({
         database,
@@ -123,9 +184,9 @@ describe("saved asset snapshot route", () => {
         snapshotBuilder,
       });
 
-    const firstResponse = await createHandler()(snapshotRequest());
+    const firstResponse = await createHandler()(snapshotRequest("live"));
     const first = await firstResponse.json();
-    const secondResponse = await createHandler()(snapshotRequest());
+    const secondResponse = await createHandler()(snapshotRequest("live"));
     const second = await secondResponse.json();
 
     expect(firstResponse.status).toBe(200);
@@ -140,9 +201,79 @@ describe("saved asset snapshot route", () => {
     expect(snapshotBuilder).toHaveBeenCalledWith(
       expect.objectContaining({
         asset: expect.objectContaining({ id: "saved-asset" }),
-        mode: "fixture",
+        mode: "live",
       }),
       expect.objectContaining({ refresh: true, signal: expect.any(AbortSignal) }),
     );
+  });
+
+  it("returns an unambiguous persisted success when retention pruning fails", async () => {
+    const database = new RouteDatabase();
+    database.failPrune = true;
+    const handler = createSnapshotPostHandler({
+      database,
+      environment: {},
+      now: () => new Date("2026-08-03T12:00:00.000Z"),
+      limiter: new LocalWorkLimiter({ maximumConcurrent: 1 }),
+      snapshotBuilder: savedLiveSnapshotBuilder(),
+    });
+
+    const response = await handler(snapshotRequest("live"));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({ persisted: true, snapshotId: expect.any(String) });
+    expect(database.runs).toHaveLength(1);
+  });
+
+  it("rejects an oversized response envelope before saving another run", async () => {
+    const database = new RouteDatabase();
+    const common = {
+      database,
+      environment: {},
+      now: () => new Date("2026-08-03T12:00:00.000Z"),
+      limiter: new LocalWorkLimiter({ maximumConcurrent: 1 }),
+    };
+    const first = await createSnapshotPostHandler({
+      ...common,
+      snapshotBuilder: savedLiveSnapshotBuilder(),
+    })(snapshotRequest("live"));
+    expect(first.status).toBe(200);
+
+    const prior = database.runs[0];
+    const priorSnapshot = JSON.parse(String(prior.snapshot_json)) as Awaited<
+      ReturnType<typeof buildSnapshot>
+    >;
+    const priorClusterId = priorSnapshot.groups[0].cluster.id;
+    prior.alerts_json = JSON.stringify([{
+      id: "large-alert",
+      type: "new-cluster",
+      assetId: "saved-asset",
+      clusterId: priorClusterId,
+      dedupeKey: `saved-asset:live:${priorClusterId}:new-cluster:large`,
+      createdAt: "2026-08-03T11:00:00.000Z",
+      updatedAt: "2026-08-03T11:00:00.000Z",
+      message: "a".repeat(2_000_000),
+    }]);
+    prior.byte_size = new TextEncoder().encode(
+      String(prior.snapshot_json) + String(prior.alerts_json),
+    ).byteLength;
+
+    const baseBuilder = savedLiveSnapshotBuilder();
+    const oversizedBuilder = vi.fn<typeof buildSnapshot>(async (input, dependencies) => {
+      const snapshot = await baseBuilder(input, dependencies);
+      const marker = `fixture:${"x".repeat(1_100_000)}`;
+      snapshot.detections[0].source = marker;
+      snapshot.groups[0].cluster.detections[0].source = marker;
+      return snapshot;
+    });
+    const response = await createSnapshotPostHandler({
+      ...common,
+      limiter: new LocalWorkLimiter({ maximumConcurrent: 1 }),
+      snapshotBuilder: oversizedBuilder,
+    })(snapshotRequest("live"));
+
+    expect(response.status).toBe(502);
+    expect(database.runs).toHaveLength(1);
   });
 });

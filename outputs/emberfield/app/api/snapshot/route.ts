@@ -61,6 +61,9 @@ function boundedJsonResponse(
   return new Response(body, { ...init, headers });
 }
 
+const jsonByteLength = (payload: unknown): number =>
+  new TextEncoder().encode(JSON.stringify(payload)).byteLength;
+
 const snapshotLimiter = new LocalWorkLimiter({
   maximumConcurrent: 1,
   minimumIntervalMs: 500,
@@ -113,6 +116,12 @@ export function createSnapshotPostHandler(
     const signal = AbortSignal.any([request.signal, deadline]);
     try {
       const isVirtualDemo = parsed.data.assetId === DEMO_ASSET.id;
+      if (parsed.data.mode === "fixture" && !isVirtualDemo) {
+        return boundedJsonResponse(
+          { error: "Fixture mode is available only for the virtual demo asset" },
+          { status: 409 },
+        );
+      }
       const repository = isVirtualDemo
         ? null
         : new AssetRepository(
@@ -160,6 +169,37 @@ export function createSnapshotPostHandler(
         previousRuns[0]?.snapshot ?? null,
         existingAlerts,
       );
+      if (repository) {
+        const placeholderId = "00000000-0000-4000-8000-000000000000";
+        const candidateRun = {
+          id: placeholderId,
+          assetId: asset.id,
+          mode: stabilized.snapshot.mode,
+          generatedAt: stabilized.snapshot.generatedAt,
+          snapshot: stabilized.snapshot,
+          alerts: stabilized.alerts,
+          byteSize: 0,
+          createdAt: stabilized.snapshot.generatedAt,
+        };
+        const candidateHistory = compactSnapshotHistory(
+          [candidateRun, ...previousRuns],
+          historySince,
+        );
+        if (
+          jsonByteLength({
+            ...stabilized.snapshot,
+            snapshotId: placeholderId,
+            persisted: true,
+            alerts: stabilized.alerts,
+            history24h: candidateHistory,
+          }) > MAXIMUM_RESPONSE_BYTES
+        ) {
+          return boundedJsonResponse(
+            { error: "Snapshot response exceeds the local safety limit" },
+            { status: 502 },
+          );
+        }
+      }
       const storedRun = repository
         ? await repository.saveSnapshotRun(
             stabilized.snapshot,
@@ -168,12 +208,17 @@ export function createSnapshotPostHandler(
           )
         : null;
       if (repository) {
-        await repository.pruneSnapshotHistory(
-          asset.id,
-          parsed.data.mode,
-          new Date(generatedAtMs - RETENTION_WINDOW_MS).toISOString(),
-          signal,
-        );
+        try {
+          await repository.pruneSnapshotHistory(
+            asset.id,
+            parsed.data.mode,
+            new Date(generatedAtMs - RETENTION_WINDOW_MS).toISOString(),
+            signal,
+          );
+        } catch {
+          // Retention is maintenance, not part of the already-completed save.
+          // A later refresh can retry pruning without making this run ambiguous.
+        }
       }
       const history24h = compactSnapshotHistory(
         storedRun ? [storedRun, ...previousRuns] : [],

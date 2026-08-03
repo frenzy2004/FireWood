@@ -134,16 +134,33 @@ const throwIfAborted = (signal: AbortSignal | undefined): void => {
   signal?.throwIfAborted();
 };
 
-const asSavedAsset = (row: AssetRow): SavedAsset => ({
-  id: row.id,
-  name: row.name,
-  category: row.category,
-  location: { lat: Number(row.latitude), lon: Number(row.longitude) },
-  radiusKm: Number(row.radius_km),
-  notes: row.notes,
-  createdAt: row.created_at,
-  updatedAt: row.updated_at,
-});
+const asSavedAsset = (row: AssetRow): SavedAsset => {
+  const boundary = z.object({
+    latitude: z.number().finite().min(-90).max(90),
+    longitude: z.number().finite().min(-180).max(180),
+    radiusKm: z.number().finite().min(1).max(100),
+  }).safeParse({
+    latitude: Number(row.latitude),
+    longitude: Number(row.longitude),
+    radiusKm: Number(row.radius_km),
+  });
+  if (!boundary.success) {
+    throw new Error("Persisted asset has invalid coordinates or radius");
+  }
+  return {
+    id: row.id,
+    name: row.name,
+    category: row.category,
+    location: {
+      lat: boundary.data.latitude,
+      lon: boundary.data.longitude,
+    },
+    radiusKm: boundary.data.radiusKm,
+    notes: row.notes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+};
 
 const asStoredAlert = (row: AlertRow): StoredAlert => ({
   id: row.id,
@@ -215,6 +232,8 @@ const detectionFingerprint = (
 };
 
 const MAXIMUM_SNAPSHOT_RUN_BYTES = 4_000_000;
+const MAXIMUM_HISTORY_READ_BYTES = 8_000_000;
+const MAXIMUM_HISTORY_READ_RUNS = 48;
 const MAXIMUM_D1_BATCH_STATEMENTS = 100;
 
 function sanitizePersistedValue(value: unknown, key = ""): unknown {
@@ -603,13 +622,36 @@ export class AssetRepository {
     throwIfAborted(signal);
     const normalizedSince = utcIso(since);
     const { results } = await this.database
-      .prepare(`SELECT id, asset_id, mode, generated_at, snapshot_json,
-        alerts_json, byte_size, created_at
-        FROM snapshot_runs
-        WHERE asset_id = ? AND mode = ? AND generated_at >= ?
+      .prepare(`WITH eligible AS (
+          SELECT id, asset_id, mode, generated_at, snapshot_json, alerts_json,
+            length(CAST(snapshot_json AS BLOB)) +
+              length(CAST(alerts_json AS BLOB)) AS payload_bytes,
+            created_at
+          FROM snapshot_runs
+          WHERE asset_id = ? AND mode = ? AND generated_at >= ?
+            AND length(CAST(snapshot_json AS BLOB)) +
+              length(CAST(alerts_json AS BLOB)) <= ?
+        ), ranked AS (
+          SELECT *, SUM(payload_bytes) OVER (
+            ORDER BY generated_at DESC, id ASC
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+          ) AS cumulative_bytes
+          FROM eligible
+        )
+        SELECT id, asset_id, mode, generated_at, snapshot_json, alerts_json,
+          payload_bytes AS byte_size, created_at
+        FROM ranked
+        WHERE cumulative_bytes <= ?
         ORDER BY generated_at DESC, id ASC
         LIMIT ?`)
-      .bind(assetId, mode, normalizedSince, 48)
+      .bind(
+        assetId,
+        mode,
+        normalizedSince,
+        MAXIMUM_SNAPSHOT_RUN_BYTES,
+        MAXIMUM_HISTORY_READ_BYTES,
+        MAXIMUM_HISTORY_READ_RUNS,
+      )
       .all<SnapshotRunRow>();
     throwIfAborted(signal);
     return results.map(snapshotRunFromRow);

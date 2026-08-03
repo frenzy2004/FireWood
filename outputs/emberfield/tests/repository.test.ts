@@ -383,6 +383,25 @@ describe("AssetRepository", () => {
       }),
     ).rejects.toBeDefined();
   });
+
+  it("rejects a legacy persisted asset whose radius exceeds the supported boundary", async () => {
+    const { database, repository } = createRepository();
+    database.assets.set("legacy-wide", {
+      id: "legacy-wide",
+      name: "Legacy wide asset",
+      category: "field",
+      latitude: 36.7,
+      longitude: -119.7,
+      radius_km: 160.934,
+      notes: null,
+      created_at: fixedNow.toISOString(),
+      updated_at: fixedNow.toISOString(),
+    });
+
+    await expect(repository.getAsset("legacy-wide")).rejects.toThrow(
+      "Persisted asset has invalid coordinates or radius",
+    );
+  });
 });
 
 describe("asset API validation", () => {

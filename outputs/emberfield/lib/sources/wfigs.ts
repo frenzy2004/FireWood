@@ -12,9 +12,14 @@ import {
 
 const POINT_ENDPOINT = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Incident_Locations_Current/FeatureServer/0/query";
 const PERIMETER_ENDPOINT = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query";
-const PAGE_SIZE = 2_000;
-// Two layers at one eight-megabyte page each cap aggregate WFIGS response
-// material at 16 MB before parsing and persistence.
+const POINT_PAGE_SIZE = 500;
+const PERIMETER_PAGE_SIZE = 100;
+const POINT_RESPONSE_BYTES = 1_000_000;
+const PERIMETER_RESPONSE_BYTES = 2_000_000;
+const MAXIMUM_PERIMETER_COORDINATES = 10_000;
+const MAXIMUM_LAYER_COORDINATES = 30_000;
+// Each layer is intentionally limited to one bounded page. A full page is
+// labeled partial instead of attempting an unbounded pagination sequence.
 const MAXIMUM_PAGES = 1;
 
 export const WFIGS_POINT_FIELDS = "OBJECTID,GlobalID,IrwinID,IncidentName,IncidentTypeCategory,IncidentSize,PercentContained,FireDiscoveryDateTime,ModifiedOnDateTime_dt";
@@ -89,6 +94,14 @@ export function parseWfigsGeoJson(
   kind: "points" | "perimeters",
 ): WfigsData {
   const features = featureCollection(payload);
+  const maximumFeatures = kind === "points" ? POINT_PAGE_SIZE : PERIMETER_PAGE_SIZE;
+  if (features.length > maximumFeatures) {
+    throw new SourceAdapterError(
+      "WFIGS",
+      "invalid-response",
+      "WFIGS returned more features than requested",
+    );
+  }
   if (kind === "points") {
     return {
       incidents: features.map((feature) => {
@@ -118,9 +131,8 @@ export function parseWfigsGeoJson(
     };
   }
 
-  return {
-    incidents: [],
-    perimeters: features.map((feature) => {
+  let layerCoordinates = 0;
+  const perimeters = features.map((feature) => {
       const properties = asRecord(feature.properties) ?? {};
       const geometry = asRecord(feature.geometry);
       if (
@@ -129,6 +141,37 @@ export function parseWfigsGeoJson(
       ) {
         throw new SourceAdapterError("WFIGS", "invalid-response", "WFIGS returned an invalid perimeter");
       }
+      let featureCoordinates = 0;
+      const visit = (value: unknown): void => {
+        if (!Array.isArray(value)) {
+          throw new SourceAdapterError("WFIGS", "invalid-response", "WFIGS returned an invalid perimeter");
+        }
+        if (
+          value.length >= 2 &&
+          finiteNumber(value[0]) !== null &&
+          finiteNumber(value[1]) !== null
+        ) {
+          featureCoordinates += 1;
+          layerCoordinates += 1;
+          if (featureCoordinates > MAXIMUM_PERIMETER_COORDINATES) {
+            throw new SourceAdapterError(
+              "WFIGS",
+              "invalid-response",
+              "WFIGS perimeter geometry exceeds the coordinate limit",
+            );
+          }
+          if (layerCoordinates > MAXIMUM_LAYER_COORDINATES) {
+            throw new SourceAdapterError(
+              "WFIGS",
+              "invalid-response",
+              "WFIGS perimeter layer exceeds the coordinate limit",
+            );
+          }
+          return;
+        }
+        for (const child of value) visit(child);
+      };
+      visit(geometry.coordinates);
       return {
         id: String(properties.GlobalID ?? properties.OBJECTID ?? feature.id ?? ""),
         sourceGlobalId:
@@ -148,7 +191,10 @@ export function parseWfigsGeoJson(
         updatedAt: isoDate(properties.attr_ModifiedOnDateTime_dt),
         geometry: geometry as WfigsGeometry,
       };
-    }),
+    });
+  return {
+    incidents: [],
+    perimeters,
   };
 }
 
@@ -157,6 +203,7 @@ function queryUrl(
   bbox: BoundingBox,
   fields: string,
   offset: number,
+  pageSize: number,
 ): string {
   const url = new URL(endpoint);
   const parameters: Record<string, string> = {
@@ -168,7 +215,7 @@ function queryUrl(
     outSR: "4326",
     spatialRel: "esriSpatialRelIntersects",
     returnGeometry: "true",
-    resultRecordCount: String(PAGE_SIZE),
+    resultRecordCount: String(pageSize),
     resultOffset: String(offset),
     orderByFields: "OBJECTID ASC",
     outFields: fields,
@@ -187,8 +234,12 @@ async function fetchLayer(
 ): Promise<WfigsData & { truncated: boolean }> {
   const combined: WfigsData = { incidents: [], perimeters: [] };
   let truncated = false;
+  const pageSize = kind === "points" ? POINT_PAGE_SIZE : PERIMETER_PAGE_SIZE;
+  const responseBytes = kind === "points"
+    ? POINT_RESPONSE_BYTES
+    : PERIMETER_RESPONSE_BYTES;
   for (let page = 0; page < MAXIMUM_PAGES; page += 1) {
-    const url = queryUrl(endpoint, bbox, fields, page * PAGE_SIZE);
+    const url = queryUrl(endpoint, bbox, fields, page * pageSize, pageSize);
     const response = await fetchWithTimeout(
       "WFIGS",
       url,
@@ -197,12 +248,12 @@ async function fetchLayer(
       12_000,
       signal,
     );
-    const payload = await boundedJson("WFIGS", response, 8_000_000);
+    const payload = await boundedJson("WFIGS", response, responseBytes);
     const features = featureCollection(payload);
     const parsed = parseWfigsGeoJson(payload, kind);
     combined.incidents.push(...parsed.incidents);
     combined.perimeters.push(...parsed.perimeters);
-    truncated = features.length >= PAGE_SIZE;
+    truncated = features.length >= pageSize;
     if (!truncated) break;
   }
   return { ...combined, truncated };
