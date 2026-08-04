@@ -14,7 +14,7 @@ Snapshot persistence and historical replay status: **COMPLETE FOR THE LOCAL PROT
 | --- | --- |
 | `npm test` | Passed: 20 test files, 255 tests |
 | `npm run lint` | Passed with no ESLint findings |
-| `npm run build` | Passed; Vinext produced the app and six API routes |
+| `npm run build` | Passed; Vinext produced the app and seven API routes |
 | `npm run db:local` | Passed; all versioned migrations applied, and the repeat run reported no pending migrations |
 
 The build emitted one non-blocking warning about client chunks larger than 500 kB after minification.

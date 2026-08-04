@@ -28,7 +28,8 @@ For turning this into a recorded artifact, see `docs/RECORDING.md`.
 | 0:20 to 1:15 | Read the four blocks of output | Terminal | No |
 | 1:15 to 1:35 | Same event on the map, plume corridor | Console, fixture | Needs dev server |
 | 1:35 to 1:55 | Smoke-arrival panel | Console, fixture | Needs dev server |
-| 1:55 to 2:25 | Gemma picks its own tools | Console, fixture | Needs warm Ollama |
+| 1:55 to 2:15 | Gemma picks its own tools | Console, fixture | Needs warm Ollama |
+| 2:15 to 2:25 | Rank the portfolio by risk | Console | Needs dev server |
 | 2:25 to 2:45 | Timeline, then Live proof | Console, live | Needs network |
 | 2:45 to 3:00 | Close | Anywhere | No |
 
@@ -232,7 +233,7 @@ While it runs, say:
 
 > "This is Gemma 4 12B running locally through Ollama on loopback. Prompt,
 > inference, and asset notes never reach a hosted AI service. Gemma is not
-> narrating a fixed report: it selects from eleven schema-validated evidence
+> narrating a fixed report: it selects from twelve schema-validated evidence
 > tools, including the smoke-arrival estimate you just watched, can gather
 > evidence over several rounds, and has to ground its answer in what those tools
 > returned."
@@ -244,6 +245,36 @@ Expand **Visible tool trace**. Point at one entry.
 > the score, and the arrival time. Gemma owns tool selection and synthesis."
 
 Read one sentence of the briefing aloud. One. Do not read the whole thing.
+
+**If the briefing falls back instead of grounding, do not retry and do not
+apologise.** Say this and move on — it is a stronger point than the prose was:
+
+> "That is the grounding validator refusing a sentence it could not tie back to
+> a tool result. It would rather say nothing than say something unverifiable.
+> The evidence is in the trace either way."
+
+### The portfolio question — the one only an agent can answer
+
+Everything so far describes one place. In the asset rail, press **Rank by risk**.
+
+> "Every panel you have seen answers a question about one asset. An operator
+> with an orchard, a barn, a livestock pasture and a crew in the field has a
+> different question, and it is the one that matters: which of my places is in
+> trouble right now? That is a judgement across assets, so no single-asset panel
+> can produce it."
+
+Point at the ranked rail and the portfolio sentence.
+
+> "One call, every saved place, ranked by how soon smoke could reach it. Only
+> the inbound one is amber and only the inbound one carries a number, because
+> that is the only status with a number worth acting on. And the ordering is
+> decided in code, not by the model — Gemma reads the ranking out, it does not
+> get to invent it."
+
+Worth adding, because it is the difference between a demo and a product:
+
+> "An asset whose evidence could not be fetched is listed as a failure, not
+> ranked as clear. Unreachable is unknown, not safe."
 
 ## 2:25 to 2:45 — timeline, then live proof
 
