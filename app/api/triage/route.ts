@@ -81,14 +81,21 @@ export function createTriagePostHandler(
     const deadline = AbortSignal.timeout(TRIAGE_DEADLINE_MS);
     const signal = AbortSignal.any([request.signal, deadline]);
     try {
-      // Fixture mode ranks the virtual assets, so the console has something to
-      // triage before anything is saved — and so the replay is comparable.
-      const saved = parsed.data.mode === "fixture"
-        ? VIRTUAL_ASSETS.map((entry) => entry.asset)
+      // The rail always shows the virtual assets, pinned ahead of saved ones, so
+      // the scan must cover them in either mode. Ranking only D1 rows in live
+      // mode made a fresh install report "no saved assets were scanned" while
+      // two assets sat visible on screen — the console contradicting itself.
+      const virtual = VIRTUAL_ASSETS.map((entry) => entry.asset);
+      const stored = parsed.data.mode === "fixture"
+        ? []
         : await new AssetRepository(
             dependencies.database ??
               (getD1Database() as unknown as D1DatabaseLike),
           ).listAssets(signal);
+      const saved = [
+        ...virtual,
+        ...stored.filter((asset) => !virtual.some((entry) => entry.id === asset.id)),
+      ];
 
       const scanned = saved.slice(0, TRIAGE_ASSET_LIMIT);
       const inputs: TriageAssetInput[] = [];
@@ -126,6 +133,9 @@ export function createTriagePostHandler(
               missingInputs: group.assessment.missingInputs,
             })),
             air: snapshot.air,
+            // Only "clear" if FIRMS actually answered.
+            detectionsAvailable: snapshot.sources.firms.status === "ok"
+              || snapshot.sources.firms.status === "partial",
           });
         } catch {
           // One unreachable asset must not blank the whole portfolio. It is

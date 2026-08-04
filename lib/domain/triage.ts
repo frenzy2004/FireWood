@@ -50,6 +50,15 @@ export interface TriageAssetInput {
   detectionCount: number;
   groups: TriageGroupInput[];
   air: AirQualityContext | null;
+  /**
+   * Whether the detection feed actually answered.
+   *
+   * An empty result means "no detections" only if the source was reachable and
+   * configured. Without a FIRMS key the feed returns nothing, and calling that
+   * `clear` would have the console assert safety it never checked — the same
+   * mistake as ranking an unreachable asset as fine.
+   */
+  detectionsAvailable?: boolean;
 }
 
 export interface AssetTriage {
@@ -96,7 +105,7 @@ function assetSummary(row: Omit<AssetTriage, "summary">): string {
     case "activity-nearby":
       return `${row.assetName} has ${plural(row.groupCount, "detection group")} nearby but none upwind. The nearest detection group is ${row.nearestGroupKm} km away.`;
     case "not-assessable":
-      return `${row.assetName} cannot be assessed for smoke arrival. Missing: ${row.missingData.join(", ") || "transport inputs"}.`;
+      return `${row.assetName} cannot be assessed. Missing: ${row.missingData.join(", ") || "transport inputs"}.`;
     default:
       return `${row.assetName} has no recent satellite detections in range. Absence of detections does not establish absence of fire.`;
   }
@@ -150,13 +159,17 @@ export function triageAsset(input: TriageAssetInput): AssetTriage {
     ...new Set(arrivals.flatMap((row) => row.arrival.missingData)),
   ];
 
+  const detectionsAvailable = input.detectionsAvailable !== false;
+  if (!detectionsAvailable) missingData.unshift("detection-feed");
+
   const status: TriageStatus =
     inbound.length > 0
       ? "smoke-inbound"
       : arrived.length > 0
         ? "smoke-likely-present"
         : input.groups.length === 0
-          ? "clear"
+          // No groups is only "clear" when the feed actually answered.
+          ? (detectionsAvailable ? "clear" : "not-assessable")
           : missingData.length > 0
             ? "not-assessable"
             : "activity-nearby";
@@ -201,12 +214,17 @@ export function triagePortfolio(inputs: TriageAssetInput[]): PortfolioTriage {
     });
 
   const inboundAssets = assets.filter((row) => row.status === "smoke-inbound");
+  const assessable = assets.filter((row) => row.status !== "not-assessable");
   const summary =
     assets.length === 0
       ? "No saved assets were scanned."
-      : inboundAssets.length === 0
-        ? `No saved asset has smoke inbound. ${plural(assets.length, "asset")} scanned. Wind shifts invalidate this immediately.`
-        : `${plural(inboundAssets.length, "asset")} of ${assets.length} scanned ${inboundAssets.length === 1 ? "has" : "have"} smoke inbound. ${inboundAssets[0].assetName} is soonest and arrives in ${inboundAssets[0].hoursUntilArrival} hours.`;
+      : assessable.length === 0
+        // "Nothing inbound" would be a safety claim drawn from evidence that
+        // was never obtained. Say that no asset could be assessed instead.
+        ? `No asset could be assessed. ${plural(assets.length, "asset")} scanned, all missing required evidence.`
+        : inboundAssets.length === 0
+          ? `No saved asset has smoke inbound. ${plural(assessable.length, "asset")} assessed of ${assets.length} scanned. Wind shifts invalidate this immediately.`
+          : `${plural(inboundAssets.length, "asset")} of ${assets.length} scanned ${inboundAssets.length === 1 ? "has" : "have"} smoke inbound. ${inboundAssets[0].assetName} is soonest and arrives in ${inboundAssets[0].hoursUntilArrival} hours.`;
 
   return {
     assets,
