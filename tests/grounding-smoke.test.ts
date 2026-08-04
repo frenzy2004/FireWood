@@ -41,6 +41,11 @@ const trace: AgentTraceEntry[] = [
           {
             clusterId: "cluster-a538a17c",
             detectionCount: 3,
+            // The natural-language summary the tool emits so a briefing has
+            // checkable vocabulary. It widens the terms in the index, so the
+            // rejection cases below matter more, not less.
+            summary:
+              "Smoke from this detection group is inbound and arrives in 4.2 hours. The distance to this detection group is 103.6 km. The transit time is 4.3 hours and the estimated arrival is 2018-11-08T19:10:43.000Z.",
             arrival: {
               distanceKm: 103.6,
               transportBearingDeg: 240,
@@ -97,6 +102,30 @@ describe("nothing was loosened", () => {
     ["uncited claim", "Smoke arrives in 4.2 hours."],
     ["citation that does not exist", "Smoke arrives in 4.2 hours [evidence:99]."],
   ])("rejects %s", (_label, answer) => {
+    expect(isAnswerGrounded(answer, trace)).toBe(false);
+  });
+
+  it("accepts the briefing Gemma produces from the summary", () => {
+    // Captured verbatim from three consecutive local gemma4:12b runs. The
+    // opening sentence of the real briefing also names the asset, which it
+    // takes from list_assets; this fixture models only the smoke tool, so the
+    // three claims asserted here are the ones this evidence can carry.
+    expect(
+      isAnswerGrounded(
+        "The distance to this detection group is 103.6 km [evidence:3]. " +
+          "The transit time is 4.3 hours [evidence:3]. " +
+          "Smoke is estimated to arrive in 4.2 hours [evidence:3].",
+        trace,
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["inflated distance", "The distance to this detection group is 903.6 km [evidence:3]."],
+    ["inflated transit", "The transit time is 40.3 hours [evidence:3]."],
+    ["inflated arrival", "Smoke is estimated to arrive in 0.2 hours [evidence:3]."],
+  ])("rejects %s even with the summary in the index", (_label, answer) => {
+    // The summary supplies vocabulary, never permission to state a wrong value.
     expect(isAnswerGrounded(answer, trace)).toBe(false);
   });
 

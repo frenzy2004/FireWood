@@ -29,7 +29,7 @@ This is a self-assessment, not a predicted judge score. It separates demonstrate
 
 ### Deductions
 
-- The recorded successful real-model proof is deliberately narrow. A broader live-source prompt also exercised native inspection, but its generated prose failed the claim-level validator and was replaced with the safe grounding fallback.
+- Claim-level grounding initially rejected true briefings for using ordinary synonyms rather than the evidence's own field names. Evidence tools now emit a plain-language summary alongside the structured values, and three consecutive local `gemma4:12b` runs returned grounded, fully cited briefings. Rejection of false figures is unchanged and asserted in `tests/grounding-smoke.test.ts`.
 - Claim-level lexical grounding reduces unsupported prose, but it is not a formal verifier. It can still require hardening for unsupported generic claims and can reject legitimate paraphrases. The deterministic panels and source trace remain the authoritative evidence surface.
 - The agent uses one 45 second budget for model work and tools. The final successful warm run completed in about 26.2 seconds. A cold or queued run did reach the timeout, so the presentation checklist includes a model warm-up.
 

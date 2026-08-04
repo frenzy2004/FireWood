@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { distanceKm } from "../domain/geometry";
-import { estimateSmokeArrival } from "../domain/smoke";
+import { estimateSmokeArrival, type SmokeArrival } from "../domain/smoke";
 import type { GeocodePayload } from "../sources/census";
 import type { StoredAlert, StoredAgentRun } from "../server/repository";
 import type {
@@ -335,6 +335,37 @@ const groupEvidence = (group: SnapshotGroup) => ({
     : null,
 });
 
+/**
+ * A sentence the model can quote instead of inventing its own wording.
+ *
+ * Grounding checks a claim against the vocabulary the evidence actually
+ * contains. A briefing that says "detection group" cannot be verified, because
+ * the payload has `detectionCount` and no word for "group" anywhere — so a true
+ * statement was being rejected for using an ordinary synonym. Emitting the
+ * sentence as evidence puts that vocabulary in the payload and gives the model
+ * a phrasing that is checkable by construction.
+ *
+ * This adds words, never numbers the estimator did not produce, so a false
+ * figure remains as unverifiable as before.
+ */
+function smokeArrivalSummary(arrival: SmokeArrival): string {
+  const where = `The distance to this detection group is ${arrival.distanceKm} km.`;
+  switch (arrival.status) {
+    case "inbound":
+      return `Smoke from this detection group is inbound and arrives in ${arrival.hoursUntilArrival} hours. ${where} The transit time is ${arrival.transitHours} hours and the estimated arrival is ${arrival.estimatedArrivalAt}.`;
+    case "likely-arrived":
+      return `Smoke from this detection group has likely arrived; the estimated arrival of ${arrival.estimatedArrivalAt} has passed. ${where}`;
+    case "beyond-range":
+      return `This detection group lies beyond the validated range. ${where} The transit time is ${arrival.transitHours} hours.`;
+    case "off-plume":
+      return `This detection group is not upwind of the asset; it sits ${arrival.offAxisDeg} degrees off the transport bearing. ${where}`;
+    case "calm-wind":
+      return `The wind is too calm to give this detection group a transport direction. ${where}`;
+    default:
+      return `Smoke arrival for this detection group is not assessable. Missing: ${arrival.missingData.join(", ") || "transport inputs"}.`;
+  }
+}
+
 async function resolveAsset(
   context: AgentToolContext,
   requestedAssetId: unknown,
@@ -510,21 +541,25 @@ export async function executeAgentTool(
     // Estimates are anchored to the moment the evidence was gathered, not to
     // wall-clock time, so a replayed snapshot reproduces the same arrival.
     const referenceInstant = new Date(snapshot.generatedAt);
-    const arrivals = groups.map((group) => ({
-      clusterId: group.cluster.id,
-      centroid: group.cluster.centroid,
-      detectionCount: group.cluster.detectionCount,
-      latestAcquiredAt: group.cluster.latestAcquiredAt,
-      weatherQuality: group.weather?.quality ?? null,
-      arrival: estimateSmokeArrival({
+    const arrivals = groups.map((group) => {
+      const arrival = estimateSmokeArrival({
         asset: savedAsset.location,
         source: group.cluster.centroid,
         detectedAt: group.cluster.latestAcquiredAt,
         windFromDeg: group.weather?.windFromDeg ?? null,
         windSpeedMps: group.weather?.windSpeedMps ?? null,
         now: referenceInstant,
-      }),
-    }));
+      });
+      return {
+        clusterId: group.cluster.id,
+        centroid: group.cluster.centroid,
+        detectionCount: group.cluster.detectionCount,
+        latestAcquiredAt: group.cluster.latestAcquiredAt,
+        weatherQuality: group.weather?.quality ?? null,
+        arrival,
+        summary: smokeArrivalSummary(arrival),
+      };
+    });
     const downwind = arrivals.filter((row) =>
       row.arrival.status === "inbound" ||
       row.arrival.status === "likely-arrived" ||

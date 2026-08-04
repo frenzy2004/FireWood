@@ -157,9 +157,13 @@ project. The commit log is the receipt and is worth reading.
 
 - Self-scored 80/100 in `docs/SELF-EVALUATION.md` (Gemma 23/30, Innovation
   25/30, Functionality 16/20, Presentation 16/20).
-- Free-form Gemma briefings can still be rejected by the grounding validator and
-  replaced with the safe fallback. This happened during final testing on a
-  broad live-source prompt. The validator is a guardrail, not a proof.
+- Grounding depends on the model reusing the evidence's vocabulary. Briefings
+  were being rejected for ordinary synonyms — "detection group" cannot be
+  checked when the payload holds `detectionCount` and no word for "group". The
+  fix was to make each evidence tool emit a plain-language summary, so the
+  vocabulary and the numbers arrive together. Three consecutive local runs now
+  return grounded briefings. A model that ignores that phrasing will still be
+  rejected, and the validator remains a guardrail rather than a proof.
 - One well-observed event is not a validated model. The +1.4h correction is a
   single measured median, not a fit.
 - Straight-line advection ignores terrain, mixing height, and diurnal wind shift.

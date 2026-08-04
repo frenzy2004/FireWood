@@ -67,7 +67,7 @@ The successful warm run completed in about 26.2 seconds and returned `persistenc
 
 After the final tool-set review, a second real request proved the new native `geocode_location` path. Gemma selected the tool, the live US Census Geocoder returned `status: ok`, and Gemma produced `The Census source mode is live [evidence:1].` in two rounds and about 7.0 seconds. The trace reported `geocode_location`, a server-issued evidence reference, and live Census source state; the prompt, answer, and trace were not persisted.
 
-A broader live-orchard prompt also selected `inspect_asset` and received current live evidence, but the generated synthesis failed the conservative claim-level validator. The route returned the safe grounding fallback rather than exposing unsupported prose. The deterministic panels and visible tool result remain authoritative.
+A broader live-orchard prompt also selected `inspect_asset` and received current live evidence. Synthesis initially failed the conservative claim-level validator because the model described evidence in synonyms the payload did not contain; evidence tools now emit a plain-language summary and three consecutive fixture runs returned grounded briefings. Unsupported prose is still replaced by the safe fallback, and the deterministic panels and visible tool result remain authoritative.
 
 ## 3. Sanitized live source proof
 
