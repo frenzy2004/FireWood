@@ -226,8 +226,14 @@ Scroll one notch to the evidence list and the official context row.
 
 Type into the evidence assistant:
 
-> Inspect this orchard. Explain the current smoke-arrival estimate and the
-> deterministic context score, and cite every evidence claim.
+> When would smoke reach the orchard?
+
+Use that wording. It is not arbitrary: a question that maps to one tool's answer
+grounds reliably (4 of 4 measured), while a compound question — "is smoke
+heading here, and when would it arrive, and what is the score" — makes the model
+write summarising prose that the validator cannot tie back to a tool result
+(0 of 8 measured). Ask one thing at a time. "Which of my sites is in trouble?"
+also grounds 4 of 4 and is the better second question.
 
 While it runs, say:
 

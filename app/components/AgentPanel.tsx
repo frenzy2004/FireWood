@@ -5,11 +5,20 @@ import { useEffect, useId, useRef, useState } from "react";
 
 import type { DashboardSnapshot, IntegrationStatus } from "../hooks/use-dashboard";
 
-const starters = ["Brief me on this ranch", "What evidence is missing?", "Summarize activity change in 24 hours"];
+// One-click prompts, chosen by measurement rather than by what reads well.
+// A question that maps to a single tool's answer grounds reliably; a compound
+// or summarising one makes the model write prose the validator cannot tie back
+// to a tool result. The previous set — "Brief me on this ranch", "Summarize
+// activity change in 24 hours" — were all of the second kind, so every button
+// in the panel returned a fallback.
+const starters = ["When would smoke reach here?", "Which of my sites is in trouble?", "What evidence is missing?"];
 type Trace = { toolName?: string; function?: string; arguments?: unknown; validatedArguments?: unknown; durationMs?: number; sourceStatus?: unknown; resultSummary?: unknown; status?: string };
-type AgentRunStatus = "ok" | "offline" | "timeout" | "round-limit" | "grounding-error" | "error";
+type AgentRunStatus = "ok" | "offline" | "timeout" | "round-limit" | "grounding-error" | "evidence-answer" | "error";
 const runStatusLabels: Record<AgentRunStatus, string> = {
   ok: "Grounded",
+  // The answer came from the tool results, not the model's prose. Labelled
+  // distinctly so the reader is never told the model wrote something it did not.
+  "evidence-answer": "From evidence",
   offline: "Offline",
   timeout: "Timed out",
   "round-limit": "Round limit",
