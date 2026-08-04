@@ -56,7 +56,7 @@ export function Dashboard({ initialSnapshot }: { initialSnapshot?: DashboardSnap
     else if (event.key === "Home") { event.preventDefault(); activateTab(0, true); }
     else if (event.key === "End") { event.preventDefault(); activateTab(tabs.length - 1, true); }
   };
-  const assetRail = <AssetRail assets={dashboard.assets} selectedId={dashboard.selectedAsset.id} summaries={dashboard.summaries} onSelect={dashboard.selectAsset} onAdd={() => setSetupOpen(true)} storageMessage={dashboard.assetStorageError} />;
+  const assetRail = <AssetRail assets={dashboard.assets} selectedId={dashboard.selectedAsset.id} summaries={dashboard.summaries} onSelect={dashboard.selectAsset} onAdd={() => setSetupOpen(true)} storageMessage={dashboard.assetStorageError} triage={dashboard.triage} triagePending={dashboard.triagePending} onTriage={() => { void dashboard.runTriage(); }} />;
   const inspector = <ActivityInspector snapshot={replaySnapshot} selectedGroupId={dashboard.selectedGroupId} alerts={dashboard.alerts} replayCutoff={replay.cutoff} />;
   const timeline = <TimelineDock snapshot={snapshot} replay={replay} onSelect={dashboard.setSelectedGroupId} onReplayChange={updateReplay} />;
   const agent = <AgentPanel snapshot={snapshot} selectedAssetId={dashboard.selectedAsset.id} ollamaStatus={dashboard.health?.integrations.ollama.status} />;

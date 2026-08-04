@@ -130,6 +130,34 @@ export type SavedAsset = {
   notes?: string | null;
 };
 
+export type TriageStatus =
+  | "smoke-inbound"
+  | "smoke-likely-present"
+  | "activity-nearby"
+  | "not-assessable"
+  | "clear";
+
+export type AssetTriageRow = {
+  assetId: string;
+  assetName: string;
+  status: TriageStatus;
+  hoursUntilArrival: number | null;
+  estimatedArrivalAt: string | null;
+  nearestGroupKm: number | null;
+  detectionCount: number;
+  groupCount: number;
+  summary: string;
+};
+
+export type PortfolioTriage = {
+  assets: AssetTriageRow[];
+  assetsScanned: number;
+  assetsInbound: number;
+  summary: string;
+  assetsOmitted?: number;
+  failures?: Array<{ assetId: string; assetName: string }>;
+};
+
 export type IntegrationStatus = "ready" | "missing-key" | "offline" | "error";
 
 export type HealthPayload = {
@@ -430,6 +458,9 @@ export function useDashboard(initialSnapshot?: DashboardSnapshot) {
   const [loading, setLoading] = useState(!hydratedInitialSnapshot);
   const [error, setError] = useState<DashboardErrorNotice | null>(null);
   const [assetStorageError, setAssetStorageError] = useState<string | null>(null);
+  const [triage, setTriage] = useState<PortfolioTriage | null>(null);
+  const [triagePending, setTriagePending] = useState(false);
+  const triageRequest = useRef<AbortController | null>(null);
   const [health, setHealth] = useState<HealthPayload | undefined>();
   const [healthError, setHealthError] = useState<string | null>(null);
   const [lastRefreshAt, setLastRefreshAt] = useState(hydratedInitialSnapshot?.generatedAt ?? null);
@@ -539,6 +570,35 @@ export function useDashboard(initialSnapshot?: DashboardSnapshot) {
     }
   }, []);
 
+  /**
+   * Scan the whole portfolio and rank it.
+   *
+   * Deliberately manual rather than automatic: each asset costs a snapshot and
+   * a live snapshot hits four external sources, so this must be something the
+   * operator asks for rather than something that fires on every render.
+   */
+  const runTriage = useCallback(async (nextMode = mode) => {
+    triageRequest.current?.abort();
+    const controller = new AbortController();
+    triageRequest.current = controller;
+    setTriagePending(true);
+    try {
+      const response = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: nextMode }),
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("Triage scan is unavailable.");
+      setTriage((await response.json()) as PortfolioTriage);
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") return;
+      setTriage(null);
+    } finally {
+      if (triageRequest.current === controller) setTriagePending(false);
+    }
+  }, [mode]);
+
   const refresh = useCallback(async (nextMode = mode) => {
     await Promise.all([loadSnapshot(selectedAsset, nextMode), loadHealth()]);
   }, [loadHealth, loadSnapshot, mode, selectedAsset]);
@@ -622,6 +682,9 @@ export function useDashboard(initialSnapshot?: DashboardSnapshot) {
     summaries,
     refresh,
     changeMode,
+    triage,
+    triagePending,
+    runTriage,
     fixtureAvailable: isVirtualAssetId(selectedAsset.id),
   };
 }
