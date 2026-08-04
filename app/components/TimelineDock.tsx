@@ -17,6 +17,7 @@ import {
   type ReplaySources,
   type ReplayState,
 } from "./replay-events";
+import { detectionSelectionId } from "./map-evidence";
 
 export { FULL_REPLAY_STATE } from "./replay-events";
 export type { ReplaySources, ReplayState } from "./replay-events";
@@ -184,6 +185,7 @@ type TimelineMark = {
   source: keyof ReplaySources;
   acquiredAt: string;
   groupId?: string;
+  detectionId?: string;
   label: string;
 };
 
@@ -195,13 +197,17 @@ function sameDetection(left: DashboardDetection, right: DashboardDetection) {
 
 function timelineMarks(snapshot: DashboardSnapshot | undefined): TimelineMark[] {
   if (!snapshot) return [];
-  const firms = snapshot.detections.map((detection, index) => ({
-    id: `firms-${detection.id ?? index}`,
-    source: "firms" as const,
-    acquiredAt: detection.acquiredAt,
-    groupId: snapshot.groups.find((group) => group.cluster.detections?.some((row) => sameDetection(row, detection)))?.cluster.id,
-    label: `${detection.satellite} detection`,
-  }));
+  const firms = snapshot.detections.map((detection, index) => {
+    const detectionId = detectionSelectionId(detection, index);
+    return {
+      id: `firms-${detectionId}`,
+      source: "firms" as const,
+      acquiredAt: detection.acquiredAt,
+      detectionId,
+      groupId: snapshot.groups.find((group) => group.cluster.detections?.some((row) => sameDetection(row, detection)))?.cluster.id,
+      label: `${detection.satellite} detection`,
+    };
+  });
   const nwsObservedAt = snapshot.sources.nws?.observedAt;
   const airObservedAt = snapshot.sources.airnow?.observedAt;
   return [
@@ -213,9 +219,16 @@ function timelineMarks(snapshot: DashboardSnapshot | undefined): TimelineMark[] 
 
 type TimelineDockProps = {
   snapshot?: DashboardSnapshot;
-  onSelect: (id: string) => void;
+  onSelect?: (id: string) => void;
+  onFocusEvent?: (event: ReplayFocusEvent) => void;
   replay: ReplayState;
   onReplayChange: (state: ReplayState) => void;
+};
+
+export type ReplayFocusEvent = {
+  acquiredAt: string;
+  groupId: string;
+  detectionId: string;
 };
 
 export function TimelineDock(props: TimelineDockProps) {
@@ -228,6 +241,7 @@ export function TimelineDock(props: TimelineDockProps) {
 function TimelineDockContent({
   snapshot,
   onSelect,
+  onFocusEvent,
   replay,
   onReplayChange,
 }: TimelineDockProps) {
@@ -243,6 +257,24 @@ function TimelineDockContent({
     sources: replay.sources,
   }), [replay.sources, snapshot, startMs]);
 
+  const marks = useMemo(() => timelineMarks(snapshot), [snapshot]);
+  const events = useMemo(() => replayEventTimes(snapshot, replay.sources), [replay.sources, snapshot]);
+  const emitFirmFocus = useCallback((mark: TimelineMark, stopPlayback: boolean) => {
+    if (!mark.groupId || !mark.detectionId) return false;
+    if (stopPlayback) setPlaying(false);
+    onSelect?.(mark.groupId);
+    if (onFocusEvent) {
+      onFocusEvent({
+        acquiredAt: mark.acquiredAt,
+        groupId: mark.groupId,
+        detectionId: mark.detectionId,
+      });
+    } else {
+      onReplayChange({ cutoff: mark.acquiredAt, sources: replay.sources });
+    }
+    return true;
+  }, [onFocusEvent, onReplayChange, onSelect, replay.sources]);
+
   useEffect(() => {
     if (!playing || !snapshot) return;
     const timer = window.setTimeout(() => {
@@ -251,14 +283,20 @@ function TimelineDockContent({
         setPlaying(false);
         return;
       }
-      onReplayChange(next);
+      const firmsMark = next.cutoff === null
+        ? undefined
+        : marks.find((mark) => (
+            mark.source === "firms"
+            && mark.groupId
+            && mark.detectionId
+            && Date.parse(mark.acquiredAt) === Date.parse(next.cutoff ?? "")
+          ));
+      if (!firmsMark || !emitFirmFocus(firmsMark, false)) onReplayChange(next);
       if (next.cutoff === null) setPlaying(false);
-    }, 900);
+    }, 2_000);
     return () => window.clearTimeout(timer);
-  }, [onReplayChange, playing, replay, snapshot]);
+  }, [emitFirmFocus, marks, onReplayChange, playing, replay, snapshot]);
 
-  const marks = useMemo(() => timelineMarks(snapshot), [snapshot]);
-  const events = useMemo(() => replayEventTimes(snapshot, replay.sources), [replay.sources, snapshot]);
   const eventIndex = replay.cutoff === null
     ? -1
     : events.findIndex((event) => Date.parse(event) === Date.parse(replay.cutoff ?? ""));
@@ -299,7 +337,7 @@ function TimelineDockContent({
         const left = Math.max(0, Math.min(100, ((acquiredMs - startMs) / (24 * 60 * 60 * 1_000)) * 100));
         const label = `${mark.label} at ${formatUtc(mark.acquiredAt)}`;
         return mark.groupId
-          ? <button key={mark.id} className={`timeline-mark ${mark.source}`} onClick={() => onSelect(mark.groupId ?? "")} style={{ left: `${left}%` }} aria-label={`Select ${label}`} title={label} />
+          ? <button key={mark.id} className={`timeline-mark ${mark.source}`} onClick={() => emitFirmFocus(mark, true)} style={{ left: `${left}%` }} aria-label={`Select ${label}`} title={label} />
           : <span key={mark.id} className={`timeline-mark static ${mark.source}`} style={{ left: `${left}%` }} aria-label={label} title={label} />;
       })}
     </div>

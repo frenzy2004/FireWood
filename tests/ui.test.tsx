@@ -106,9 +106,26 @@ function backgroundResponse(input: RequestInfo | URL) {
   return new Response(JSON.stringify(snapshot), { status: 200 });
 }
 
-function ReplayHarness() {
+type ReplayFocusProbe = {
+  acquiredAt: string;
+  groupId: string;
+  detectionId: string;
+};
+
+function ReplayHarness({ onFocus = vi.fn() }: { onFocus?: (event: ReplayFocusProbe) => void }) {
   const [replay, setReplay] = useState(FULL_REPLAY_STATE);
-  return <TimelineDock snapshot={snapshot} replay={replay} onSelect={vi.fn()} onReplayChange={setReplay} />;
+  return (
+    <TimelineDock
+      snapshot={snapshot}
+      replay={replay}
+      onSelect={vi.fn()}
+      onReplayChange={setReplay}
+      onFocusEvent={(event) => {
+        onFocus(event);
+        setReplay((current) => ({ cutoff: event.acquiredAt, sources: current.sources }));
+      }}
+    />
+  );
 }
 
 beforeEach(() => {
@@ -257,17 +274,44 @@ describe("EmberField console", () => {
     expect(screen.queryByText("New activity group")).toBeNull();
   });
 
-  it("plays the next exact evidence event instead of sweeping empty time", async () => {
+  it("jumps a FIRMS marker to its exact replay time and emits its map focus", () => {
+    const onFocus = vi.fn();
+    render(<ReplayHarness onFocus={onFocus} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Select NOAA-20 detection at 2026-08-03T09:00:00Z" }));
+
+    expect(onFocus).toHaveBeenCalledWith({
+      acquiredAt: "2026-08-03T09:00:00.000Z",
+      groupId: "cluster-1",
+      detectionId: "detection-1",
+    });
+    expect((screen.getByLabelText("Timeline position") as HTMLInputElement).value).toBe("21");
+    expect(screen.getByText("Event 1 of 3")).toBeTruthy();
+  });
+
+  it("plays and focuses the next exact evidence event after two seconds", async () => {
     vi.useFakeTimers();
-    render(<ReplayHarness />);
+    const onFocus = vi.fn();
+    render(<ReplayHarness onFocus={onFocus} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Play timeline" }));
     expect((screen.getByLabelText("Timeline position") as HTMLInputElement).value).toBe("0");
 
     await act(async () => {
-      vi.advanceTimersByTime(900);
+      vi.advanceTimersByTime(1_999);
+    });
+    expect(onFocus).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(1);
     });
 
+    expect(onFocus).toHaveBeenCalledTimes(1);
+    expect(onFocus).toHaveBeenCalledWith({
+      acquiredAt: "2026-08-03T09:00:00.000Z",
+      groupId: "cluster-1",
+      detectionId: "detection-1",
+    });
     expect((screen.getByLabelText("Timeline position") as HTMLInputElement).value).toBe("21");
     expect(screen.getByText("Event 1 of 3")).toBeTruthy();
     vi.useRealTimers();

@@ -7,7 +7,8 @@ import { ActivityInspector } from "./components/ActivityInspector";
 import { AgentPanel } from "./components/AgentPanel";
 import { AssetRail } from "./components/AssetRail";
 import { SetupPanel } from "./components/SetupPanel";
-import { applyReplayState, FULL_REPLAY_STATE, type ReplayState, TimelineDock } from "./components/TimelineDock";
+import { type MapFocusRequest } from "./components/map-navigation";
+import { applyReplayState, FULL_REPLAY_STATE, type ReplayFocusEvent, type ReplayState, TimelineDock } from "./components/TimelineDock";
 import { TopBar } from "./components/TopBar";
 import { type DashboardSnapshot, type SavedAsset, useDashboard } from "./hooks/use-dashboard";
 
@@ -23,6 +24,7 @@ export function Dashboard({ initialSnapshot }: { initialSnapshot?: DashboardSnap
   const dashboard = useDashboard(initialSnapshot);
   const [activeTab, setActiveTab] = useState<Tab>("Activity");
   const [setupOpen, setSetupOpen] = useState(false);
+  const [mapFocusRequest, setMapFocusRequest] = useState<MapFocusRequest>();
   const [replaySession, setReplaySession] = useState<{ snapshotIdentity: string; state: ReplayState }>({
     snapshotIdentity: "no-snapshot",
     state: FULL_REPLAY_STATE,
@@ -51,6 +53,18 @@ export function Dashboard({ initialSnapshot }: { initialSnapshot?: DashboardSnap
   const updateReplay = useCallback((state: ReplayState) => {
     setReplaySession({ snapshotIdentity, state });
   }, [snapshotIdentity]);
+  const handleReplayFocus = useCallback((event: ReplayFocusEvent) => {
+    setReplaySession({
+      snapshotIdentity,
+      state: { cutoff: event.acquiredAt, sources: replay.sources },
+    });
+    dashboard.setSelectedGroupId(event.groupId);
+    setMapFocusRequest((current) => ({
+      id: (current?.id ?? 0) + 1,
+      mode: "threat",
+      groupId: event.groupId,
+    }));
+  }, [dashboard.setSelectedGroupId, replay.sources, snapshotIdentity]);
   const activateTab = (index: number, focus = false) => {
     const normalized = (index + tabs.length) % tabs.length;
     setActiveTab(tabs[normalized]);
@@ -64,7 +78,7 @@ export function Dashboard({ initialSnapshot }: { initialSnapshot?: DashboardSnap
   };
   const assetRail = <AssetRail assets={dashboard.assets} selectedId={dashboard.selectedAsset.id} summaries={dashboard.summaries} onSelect={dashboard.selectAsset} onAdd={() => setSetupOpen(true)} storageMessage={dashboard.assetStorageError} triage={dashboard.triage} triagePending={dashboard.triagePending} onTriage={() => { void dashboard.runTriage(); }} />;
   const inspector = <ActivityInspector snapshot={replaySnapshot} selectedGroupId={dashboard.selectedGroupId} alerts={replayAlerts} replayCutoff={replay.cutoff} />;
-  const timeline = <TimelineDock snapshot={snapshot} replay={replay} onSelect={dashboard.setSelectedGroupId} onReplayChange={updateReplay} />;
+  const timeline = <TimelineDock snapshot={snapshot} replay={replay} onFocusEvent={handleReplayFocus} onReplayChange={updateReplay} />;
   const agent = <AgentPanel snapshot={snapshot} selectedAssetId={dashboard.selectedAsset.id} ollamaStatus={dashboard.health?.integrations.ollama.status} />;
   const errorHeading = dashboard.error?.status === 429
     ? "Refresh limited."
@@ -83,7 +97,7 @@ export function Dashboard({ initialSnapshot }: { initialSnapshot?: DashboardSnap
         a user consults second, not first — held the prime column. */}
     <div className="workspace">
       {assetRail}
-      <div className="map-column"><MapCanvas snapshot={replaySnapshot} selectedGroupId={dashboard.selectedGroupId} onSelect={dashboard.setSelectedGroupId} />{activeTab === "Timeline" ? null : timeline}</div>
+      <div className="map-column"><MapCanvas snapshot={replaySnapshot} selectedGroupId={dashboard.selectedGroupId} onSelect={dashboard.setSelectedGroupId} focusRequest={mapFocusRequest} />{activeTab === "Timeline" ? null : timeline}</div>
       {agent}
     </div>
     <div className="inspector-dock">{inspector}</div>
