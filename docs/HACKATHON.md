@@ -77,7 +77,7 @@ Every call is schema-validated. The trace shows the tool, safe arguments, durati
 
 - Actual local `gemma4:12b`, not a mock or hosted proxy.
 - Ollama native `message.tool_calls` with multi-round tool continuation.
-- Nine domain-specific, schema-validated functions.
+- Eleven domain-specific, schema-validated functions, including a Camp-Fire-validated smoke-arrival estimate.
 - Source-grounding system prompt and a visible, redacted execution trace.
 - Graceful offline, invalid-call, timeout, and round-limit behavior.
 
