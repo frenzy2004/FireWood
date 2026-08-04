@@ -376,6 +376,8 @@ interface EvidenceIndex {
   terms: Set<string>;
   numbers: EvidenceNumericFact[];
   states: EvidenceStateFact[];
+  /** Ordered clock keys from evidence timestamps, e.g. "19:10:42" and "19:10". */
+  clocks: Set<string>;
 }
 
 function fieldLabels(path: string[]): string[] {
@@ -402,6 +404,9 @@ function sourceSelector(value: unknown): string | null {
 const ISO_TIMESTAMP_PATTERN =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z?$/;
 
+/** Clock times as a briefing would write them, e.g. "19:10:42" or "19:10". */
+const CLOCK_CLAIM_PATTERN = /\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b/g;
+
 /**
  * Calendar and clock components of an ISO timestamp.
  *
@@ -414,10 +419,61 @@ const ISO_TIMESTAMP_PATTERN =
  * Strictly additive — only surfaces values already present in the evidence.
  */
 function isoTimestampComponents(value: string): number[] {
+  const parsed = parseIsoTimestamp(value);
+  return parsed === null
+    ? []
+    : [parsed.year, parsed.month, parsed.day, parsed.hour, parsed.minute, parsed.second];
+}
+
+interface ParsedTimestamp {
+  year: number; month: number; day: number;
+  hour: number; minute: number; second: number;
+}
+
+/**
+ * Parse an ISO timestamp, rejecting shapes that are well-formed but impossible.
+ *
+ * Digit-width matching alone accepts `2018-02-31T25:61:61Z`. Round-tripping
+ * through Date catches both invalid clock values and dates that do not exist in
+ * the calendar, so nothing unreal ever reaches the evidence index.
+ */
+function parseIsoTimestamp(value: string): ParsedTimestamp | null {
   const match = ISO_TIMESTAMP_PATTERN.exec(value.trim());
-  if (!match) return [];
-  const [, year, month, day, hour, minute, second] = match;
-  return [year, month, day, hour, minute, second].map(Number);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second] = match.map(Number) as number[];
+  const utc = Date.UTC(year, month - 1, day, hour, minute, second);
+  if (!Number.isFinite(utc)) return null;
+  const round = new Date(utc);
+  if (
+    round.getUTCFullYear() !== year ||
+    round.getUTCMonth() !== month - 1 ||
+    round.getUTCDate() !== day ||
+    round.getUTCHours() !== hour ||
+    round.getUTCMinutes() !== minute ||
+    round.getUTCSeconds() !== second
+  ) {
+    return null;
+  }
+  return { year, month, day, hour, minute, second };
+}
+
+const clockKey = (hour: number, minute: number, second: number | null) =>
+  second === null
+    ? `${hour}:${minute}`
+    : `${hour}:${minute}:${second}`;
+
+/**
+ * Clock times a sentence asserts, as ordered keys.
+ *
+ * Components are indexed individually so that a briefing quoting "19:10:42" can
+ * ground against the timestamp it came from. That alone would also accept
+ * "19:42:10", which recombines the same three numbers into a time that never
+ * happened — so a clock claim is additionally checked as an ordered whole.
+ */
+function clockClaims(sentence: string): string[] {
+  return [...sentence.matchAll(CLOCK_CLAIM_PATTERN)].map((match) =>
+    clockKey(Number(match[1]), Number(match[2]), match[3] === undefined ? null : Number(match[3])),
+  );
 }
 
 function addEvidenceValue(
@@ -466,6 +522,11 @@ function addEvidenceValue(
     for (const component of isoTimestampComponents(value)) {
       index.numbers.push({ value: component, labels: fieldLabels(path) });
     }
+    const timestamp = parseIsoTimestamp(value);
+    if (timestamp) {
+      index.clocks.add(clockKey(timestamp.hour, timestamp.minute, timestamp.second));
+      index.clocks.add(clockKey(timestamp.hour, timestamp.minute, null));
+    }
     if ((field === "mode" || field === "status") && value.trim()) {
       index.states.push({
         kind: field,
@@ -498,6 +559,7 @@ function evidenceIndex(entries: AgentTraceEntry[]): EvidenceIndex {
     terms: new Set<string>(),
     numbers: [],
     states: [],
+    clocks: new Set<string>(),
   };
   for (const entry of entries) {
     addEvidenceValue(index, entry.resultSummary, []);
@@ -519,6 +581,12 @@ function hasSupportedNumericClaims(
   sentence: string,
   index: EvidenceIndex,
 ): boolean {
+  // A clock must match an evidence timestamp as an ordered whole. Checking the
+  // components independently would accept "19:42:10" against a 19:10:42
+  // timestamp — the same three numbers rearranged into a time that never was.
+  for (const clock of clockClaims(sentence)) {
+    if (!index.clocks.has(clock)) return false;
+  }
   return numericClaims(sentence).every((claim) => {
     const nearbyTerms = lexicalTokens(
       sentence.slice(

@@ -89,6 +89,11 @@ describe("nothing was loosened", () => {
     ["wrong distance", "The distance is 250.1 km [evidence:3]."],
     ["wrong transit", "Transit time is 12.7 hours [evidence:3]."],
     ["wrong clock time", "Estimated arrival at 03:15:00 [evidence:3]."],
+    // Same three components as 19:10:42, rearranged into a time that never was.
+    // Indexing components independently would accept this.
+    ["recombined clock components", "Estimated arrival at 19:42:10 [evidence:3]."],
+    ["impossible calendar date", "Estimated arrival at 2018-02-31T19:10:42Z [evidence:3]."],
+    ["impossible clock value", "Estimated arrival at 25:61:61 [evidence:3]."],
     ["uncited claim", "Smoke arrives in 4.2 hours."],
     ["citation that does not exist", "Smoke arrives in 4.2 hours [evidence:99]."],
   ])("rejects %s", (_label, answer) => {

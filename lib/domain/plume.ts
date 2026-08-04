@@ -7,6 +7,7 @@
 // screen are the same shapes a test can assert on. Distances use the same
 // spherical model as lib/domain/geometry.
 
+import { ADVECTION_BIAS_HOURS } from "./smoke";
 import type { Coordinate } from "./types";
 
 const EARTH_RADIUS_KM = 6_371.0088;
@@ -87,10 +88,18 @@ export function corridorFeature(
 /**
  * Hourly smoke-front positions across the corridor.
  *
- * Distance is wind speed times elapsed time — the same arithmetic
- * `estimateSmokeArrival` uses, drawn rather than stated. Arcs beyond `rangeKm`
- * are omitted rather than clamped, so the map never implies the estimate
- * reaches further than it does.
+ * Uses the *calibrated* transit relationship, not raw advection. The estimator
+ * adds ADVECTION_BIAS_HOURS to every transit, so an arc drawn at raw
+ * `windSpeed * hour` would place the front further out than the panel says it
+ * can be — the map would contradict the arrival time beside it.
+ *
+ * Inverting the estimator: transit(d) = d / (v * 3.6) + bias, so the front at
+ * elapsed time t sits at d = (t - bias) * v * 3.6. Before the bias elapses
+ * there is no front to draw, which is why the early hours are absent rather
+ * than clamped to the origin.
+ *
+ * Arcs beyond `rangeKm` are likewise omitted rather than clamped, so the map
+ * never implies the estimate reaches further than it does.
  */
 export function isochroneFeatures(
   origin: Coordinate,
@@ -99,12 +108,16 @@ export function isochroneFeatures(
   windSpeedMps: number,
   rangeKm: number,
   steps = 28,
+  biasHours = ADVECTION_BIAS_HOURS,
 ): IsochroneCollection {
   const perHourKm = Math.max(0, windSpeedMps) * 3.6;
   const features: IsochroneCollection["features"] = [];
   if (perHourKm <= 0) return { type: "FeatureCollection", features };
   for (let hour = 1; hour <= MAX_ISOCHRONE_HOURS; hour += 1) {
-    const distanceKm = perHourKm * hour;
+    const elapsedAfterBias = hour - biasHours;
+    // The plume has not cleared the calibration delay yet.
+    if (elapsedAfterBias <= 0) continue;
+    const distanceKm = elapsedAfterBias * perHourKm;
     if (distanceKm > rangeKm) break;
     features.push({
       type: "Feature",

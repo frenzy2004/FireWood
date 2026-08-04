@@ -28,8 +28,10 @@ Every air-quality product is a sensor: it tells you the air is bad once it
 already is. By then the crew has been outside for hours.
 
 Smoke has a source that VIIRS detects, a direction and a speed that wind data
-gives, and therefore an arrival time. EmberField estimates it, and the estimate
-is checkable against an event that already happened.
+gives, and therefore an arrival time. EmberField estimates it whenever those
+transport inputs are valid and the asset sits inside the plume corridor, and
+reports why it cannot otherwise — missing wind, calm wind, or off-plume. The
+estimate is checkable against an event that already happened.
 
 `npm run replay` reconstructs 8 November 2018 with no keys, no Ollama and no
 network. Thirty minutes after the Camp Fire started, the air at a farm 104 km
@@ -42,7 +44,7 @@ ignition. The estimate was 4.7 hours. **1.8 hours early** — the safe direction
 Across 14 California monitors from 104 km to 262 km, using NASA POWER 50 m wind
 and EPA AirData PM2.5 as ground truth:
 
-```
+```text
 raw advection      median +1.4h   mean |error| 2.3h
 after correction   median +0.0h   mean |error| 1.6h
 ```
@@ -53,10 +55,12 @@ suite. A validation fixture that drops its failures is not a validation.
 
 The console draws it as well as states it: a corridor wedge opening the validated
 50 degrees either side of the transport bearing, with hourly isochrone arcs marking
-where the leading edge should be after each hour. Distance is wind speed times
-elapsed time — the same arithmetic the estimator performs, drawn rather than
-asserted. Arcs beyond the corridor range are omitted rather than clamped, so the
-map never implies more reach than the method has.
+where the leading edge should be after each hour. The arcs invert the estimator
+rather than re-deriving it, so they carry the same calibration — no arc is drawn
+before the calibration delay elapses, and the map can never place smoke somewhere
+the panel beside it says smoke cannot yet be. Arcs beyond the corridor range are
+omitted rather than clamped, so the map never implies more reach than the method
+has.
 
 **The line we do not cross.** We will not predict where a fire goes. Fire spread
 is genuinely hard and getting it wrong is dangerous. Smoke advection from an

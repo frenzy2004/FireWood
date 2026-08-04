@@ -7,7 +7,11 @@ import {
   destinationPoint,
   isochroneFeatures,
 } from "../lib/domain/plume";
-import { PLUME_HALF_WIDTH_DEG } from "../lib/domain/smoke";
+import {
+  ADVECTION_BIAS_HOURS,
+  PLUME_HALF_WIDTH_DEG,
+  estimateSmokeArrival,
+} from "../lib/domain/smoke";
 
 const ORIGIN = { lat: 39.794, lon: -121.606 };
 const TRANSPORT_BEARING = 240;
@@ -70,12 +74,14 @@ describe("corridorFeature", () => {
 });
 
 describe("isochroneFeatures", () => {
-  // 10 m/s == 36 km/h, so hour N sits at 36N km.
+  // 10 m/s == 36 km/h. The estimator adds ADVECTION_BIAS_HOURS to every
+  // transit, so the front at elapsed hour N sits at (N - bias) * 36 km.
   const isochrones = isochroneFeatures(ORIGIN, TRANSPORT_BEARING, PLUME_HALF_WIDTH_DEG, 10, 130);
+  const expectedKm = (hour: number) => (hour - ADVECTION_BIAS_HOURS) * 36;
 
-  it("places each arc at wind speed times elapsed hours", () => {
+  it("places each arc at the calibrated front position, not raw advection", () => {
     for (const feature of isochrones.features) {
-      const expected = 36 * feature.properties.hour;
+      const expected = expectedKm(feature.properties.hour);
       expect(feature.properties.distanceKm).toBeCloseTo(expected, 6);
       for (const point of feature.geometry.coordinates) {
         expect(distanceKm(ORIGIN, asCoordinate(point))).toBeCloseTo(expected, 3);
@@ -83,9 +89,36 @@ describe("isochroneFeatures", () => {
     }
   });
 
+  it("agrees with the arrival estimator rather than contradicting it", () => {
+    // The map must never draw the front somewhere the panel says it cannot yet
+    // be. For each arc, the estimator's transit to that distance should equal
+    // the arc's hour.
+    for (const feature of isochrones.features) {
+      const asset = asCoordinate(
+        destinationPoint(ORIGIN, TRANSPORT_BEARING, feature.properties.distanceKm),
+      );
+      const arrival = estimateSmokeArrival({
+        asset,
+        source: ORIGIN,
+        detectedAt: "2018-11-08T14:30:00.000Z",
+        windFromDeg: (TRANSPORT_BEARING + 180) % 360,
+        windSpeedMps: 10,
+        now: new Date("2018-11-08T14:30:00.000Z"),
+      });
+      expect(arrival.transitHours).toBeCloseTo(feature.properties.hour, 1);
+    }
+  });
+
+  it("draws no front until the calibration delay has elapsed", () => {
+    // ADVECTION_BIAS_HOURS is 1.4, so hour 1 has no front to draw.
+    expect(isochrones.features.map((f) => f.properties.hour)).not.toContain(1);
+    expect(Math.min(...isochrones.features.map((f) => f.properties.hour)))
+      .toBeGreaterThan(ADVECTION_BIAS_HOURS);
+  });
+
   it("stops at the corridor range rather than clamping to it", () => {
-    // 36, 72, 108 fit inside 130; 144 does not.
-    expect(isochrones.features.map((f) => f.properties.hour)).toEqual([1, 2, 3]);
+    // (5 - 1.4) * 36 = 129.6 fits inside 130; hour 6 gives 165.6 and does not.
+    expect(isochrones.features.map((f) => f.properties.hour)).toEqual([2, 3, 4, 5]);
     for (const feature of isochrones.features) {
       expect(feature.properties.distanceKm).toBeLessThanOrEqual(130);
     }
@@ -98,7 +131,10 @@ describe("isochroneFeatures", () => {
 
   it("never exceeds the drawable horizon", () => {
     const far = isochroneFeatures(ORIGIN, TRANSPORT_BEARING, PLUME_HALF_WIDTH_DEG, 40, 100_000);
-    expect(far.features.length).toBe(MAX_ISOCHRONE_HOURS);
+    // Hours where hour <= bias have no front yet: floor(1.4) == 1, so hour 1.
+    const skippedByBias = Math.floor(ADVECTION_BIAS_HOURS);
+    expect(far.features.length).toBe(MAX_ISOCHRONE_HOURS - skippedByBias);
+    expect(far.features.at(-1)?.properties.hour).toBe(MAX_ISOCHRONE_HOURS);
   });
 
   it("returns nothing when there is no wind to carry the plume", () => {

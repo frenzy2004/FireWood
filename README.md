@@ -47,7 +47,7 @@ as the first hour each monitor exceeded three times its own pre-fire median.
 
 Across 14 California monitors between 104 km and 262 km:
 
-```
+```text
 raw advection      median +1.4h   mean |error| 2.3h
 after correction   median +0.0h   mean |error| 1.6h
 ```
