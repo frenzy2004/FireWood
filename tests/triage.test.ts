@@ -73,6 +73,26 @@ describe("triageAsset", () => {
     expect(row.summary).toContain("does not establish absence of fire");
   });
 
+  it("does not call an asset clear when the detection feed never answered", () => {
+    // Without a FIRMS key the feed returns nothing. Reporting that as "clear"
+    // would have the console assert safety it never checked.
+    const row = triageAsset({
+      ...input("a", "Storage", 40, -120, []),
+      detectionsAvailable: false,
+    });
+    expect(row.status).toBe("not-assessable");
+    expect(row.missingData).toContain("detection-feed");
+    expect(row.summary).not.toContain("no recent satellite detections");
+  });
+
+  it("still reports clear when the feed answered and found nothing", () => {
+    const row = triageAsset({
+      ...input("a", "Storage", 40, -120, []),
+      detectionsAvailable: true,
+    });
+    expect(row.status).toBe("clear");
+  });
+
   it("names missing transport inputs rather than assuming clear", () => {
     const row = triageAsset(
       input("a", "Pasture", 40, -120, [group(40, -119.6, { weather: null })]),
@@ -154,6 +174,16 @@ describe("triagePortfolio", () => {
     expect(result.assetsInbound).toBe(0);
     expect(result.summary).toContain("No saved asset has smoke inbound");
     expect(result.summary).toContain("Wind shifts invalidate this immediately");
+  });
+
+  it("does not imply safety when nothing could be assessed", () => {
+    const result = triagePortfolio([
+      { ...input("a", "Storage shed", 40, -120, []), detectionsAvailable: false },
+      { ...input("b", "Hay barn", 40, -120, []), detectionsAvailable: false },
+    ]);
+    expect(result.assetsInbound).toBe(0);
+    expect(result.summary).toContain("No asset could be assessed");
+    expect(result.summary).not.toContain("No saved asset has smoke inbound");
   });
 
   it("handles an empty portfolio", () => {

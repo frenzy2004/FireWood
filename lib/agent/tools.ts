@@ -516,6 +516,8 @@ export async function executeAgentTool(
           missingInputs: group.assessment.missingInputs,
         })),
         air: snapshot.air,
+        detectionsAvailable: snapshot.sources.firms.status === "ok"
+          || snapshot.sources.firms.status === "partial",
       });
     }
     const portfolio = triagePortfolio(inputs);
