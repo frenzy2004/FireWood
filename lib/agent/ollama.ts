@@ -49,7 +49,13 @@ export const agentRequestSchema = z
 
 export const AGENT_SYSTEM_PROMPT = `You are EmberField's local agricultural evidence assistant.
 Use only values returned by the provided tools. Every condition or source assertion in a final briefing must cite a successful tool's server-issued evidenceRef exactly as [evidence:REF]. Never cite a failed call. Call satellite heat anomalies "detections", never confirmed fires unless an official incident tool confirms one. Name missing, stale, partial, missing-key, error, live, and fixture source states explicitly. Do not invent observations, alter deterministic scores, predict spread, or issue evacuation, dispatch, firefighting, or protection-of-life or property instructions. You may suggest low-risk questions for farm continuity planning. Follow local emergency officials and NWS alerts. Data may be delayed, incomplete, or inaccurate.
-When you state a number, name the quantity in the same sentence using the tool's own wording, so the claim can be checked against its evidence. Write "the distance is 103.6 km", not "103.6 km away"; write "arrives in 4.2 hours" or "transit time is 4.3 hours", not "4.2 hours out". Prefer short sentences that carry one fact each.`;
+ANSWER FORMAT. Every sentence you write is checked mechanically against the tool output and discarded if it cannot be matched. Do not write a flowing briefing. Write a short list of factual sentences, each on its own line, each ending with its [evidence:REF].
+Tool results contain "summary" fields written in exactly the form the checker accepts. Reuse those sentences verbatim, splitting them into one fact per line, and add nothing that is not in the tool output. Choose which facts matter and what order to put them in — that is your job — but do not reword them.
+Example of the required style:
+Smoke from a detection group is inbound to the orchard [evidence:2].
+The distance to this detection group is 103.6 km [evidence:2].
+Smoke is estimated to arrive in 4.2 hours [evidence:2].
+Never write a preamble, a conclusion, or a sentence that summarises the other sentences.`;
 
 export type AgentRunStatus =
   | "ok"
@@ -57,6 +63,7 @@ export type AgentRunStatus =
   | "timeout"
   | "round-limit"
   | "grounding-error"
+  | "evidence-answer"
   | "error";
 
 export type AgentTraceStatus =
@@ -80,6 +87,8 @@ export interface AgentTraceEntry {
 export interface AgentResult {
   status: AgentRunStatus;
   answer: string;
+  /** Who wrote the answer: the model, or the tool results directly. */
+  answerSource: "model" | "evidence" | "fallback";
   model: typeof GEMMA_MODEL;
   trace: AgentTraceEntry[];
   rounds: number;
@@ -894,6 +903,69 @@ export function isAnswerGrounded(
   });
 }
 
+/**
+ * Human-readable sentences a tool produced about its own result.
+ *
+ * The evidence tools already emit plain-language summaries — that is what made
+ * model claims groundable in the first place. Those sentences are exact,
+ * derived from the same deterministic values the panels show, and true by
+ * construction.
+ */
+function evidenceSentences(trace: AgentTraceEntry[]): string[] {
+  const sentences: Array<{ text: string; ref: string }> = [];
+  const push = (value: unknown, ref: string) => {
+    if (typeof value !== "string") return;
+    const text = value.trim();
+    if (text.length < 12 || text.length > 400) return;
+    if (sentences.some((row) => row.text === text)) return;
+    sentences.push({ text, ref });
+  };
+  const walk = (value: unknown, ref: string, depth = 0) => {
+    if (depth > 6) return;
+    if (Array.isArray(value)) {
+      for (const entry of value) walk(entry, ref, depth + 1);
+      return;
+    }
+    const record = asRecord(value);
+    if (!record) return;
+    // Only fields whose whole purpose is to describe the result in words.
+    push(record.summary, ref);
+    push(record.emptyMeaning, ref);
+    for (const entry of Object.values(record)) walk(entry, ref, depth + 1);
+  };
+  for (const entry of trace) {
+    if (entry.status !== "ok" || !entry.evidenceRef) continue;
+    walk(entry.resultSummary, entry.evidenceRef);
+  }
+  return sentences.slice(0, 6).map((row) => `${row.text} [evidence:${row.ref}]`);
+}
+
+/**
+ * Answer from the evidence when the model's prose cannot be verified.
+ *
+ * Returning an apology was the wrong behaviour. The operator asked a real
+ * question, the tools answered it correctly, and the only thing that failed was
+ * the model's wording — so the console withheld a true answer it already had.
+ * Assembling the tool's own sentences gives the operator the answer, keeps every
+ * claim traceable to an evidenceRef, and is honest about who wrote it.
+ */
+export function evidenceAnswer(trace: AgentTraceEntry[]): string | null {
+  // Deliberately not re-validated. isAnswerGrounded exists to check text the
+  // model wrote against the evidence; these sentences ARE the evidence, emitted
+  // by deterministic code from the same values the panels render. Passing them
+  // back through a lexical matcher is circular, and in practice it rejected
+  // true sentences and put the apology back on screen.
+  const sentences = evidenceSentences(trace);
+  if (sentences.length === 0) return null;
+  return [
+    "The model's wording could not be verified against the evidence, so this answer is assembled from the tool results directly.",
+    "",
+    ...sentences.map((line) => `- ${line}`),
+    "",
+    "Follow local emergency officials and NWS alerts.",
+  ].join("\n");
+}
+
 const fallbackAnswers = {
   offline:
     "Local Gemma is offline. Start Ollama and warm gemma4:12b, then retry. Deterministic monitoring remains available; review the source states and follow local emergency officials and NWS alerts.",
@@ -1004,6 +1076,14 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   ): AgentResult => ({
     status,
     answer,
+    // Derived from status rather than passed in, so no exit path can leave the
+    // reader thinking the model wrote something it did not.
+    answerSource:
+      status === "ok"
+        ? "model"
+        : status === "evidence-answer"
+          ? "evidence"
+          : "fallback",
     model: GEMMA_MODEL,
     trace,
     rounds,
@@ -1071,6 +1151,10 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
         const answer = assistantResponse.message.content.trim();
         if (!answer) return await finish("error", fallbackAnswers.error, round);
         if (!isAnswerGrounded(answer, trace)) {
+          const fromEvidence = evidenceAnswer(trace);
+          if (fromEvidence) {
+            return await finish("evidence-answer", fromEvidence, round);
+          }
           return await finish("grounding-error", fallbackAnswers.grounding, round);
         }
         return await finish("ok", answer, round);

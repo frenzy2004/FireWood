@@ -450,7 +450,7 @@ describe("EmberField console", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<Dashboard initialSnapshot={snapshot} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /brief me on this ranch/i }));
+    fireEvent.click(screen.getByRole("button", { name: /when would smoke reach here/i }));
     expect(await screen.findByText(/review deterministic evidence/i)).toBeTruthy();
     expect(screen.getByText("Grounding error")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /visible tool trace/i }));
@@ -481,7 +481,7 @@ describe("EmberField console", () => {
     fireEvent.click(await screen.findByRole("button", { name: /sierra field/i }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => String(input) === "/api/snapshot" && JSON.parse(String(init?.body)).assetId === "field-2")).toBe(true));
     expect((await screen.findAllByText("Sierra Field")).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole("button", { name: /brief me on this ranch/i }));
+    fireEvent.click(screen.getByRole("button", { name: /when would smoke reach here/i }));
     await waitFor(() => expect(agentBodies).toContainEqual(expect.objectContaining({ assetId: "field-2", mode: "live" })));
   });
 
@@ -569,7 +569,7 @@ describe("EmberField console", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { rerender } = render(<AgentPanel snapshot={snapshot} selectedAssetId="demo-antelope-ranch" />);
 
-    fireEvent.click(screen.getByRole("button", { name: /brief me on this ranch/i }));
+    fireEvent.click(screen.getByRole("button", { name: /when would smoke reach here/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     const firstSignal = fetchMock.mock.calls[0]?.[1]?.signal as AbortSignal;
 
@@ -597,7 +597,7 @@ describe("EmberField console", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { rerender } = render(<AgentPanel snapshot={snapshot} selectedAssetId="demo-antelope-ranch" />);
 
-    fireEvent.click(screen.getByRole("button", { name: /brief me on this ranch/i }));
+    fireEvent.click(screen.getByRole("button", { name: /when would smoke reach here/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 
     rerender(<AgentPanel snapshot={{ ...snapshot, generatedAt: "2026-08-03T12:05:00.000Z" }} selectedAssetId="demo-antelope-ranch" />);
@@ -613,7 +613,7 @@ describe("EmberField console", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("null", { status: 200 })));
     render(<AgentPanel snapshot={snapshot} selectedAssetId="demo-antelope-ranch" />);
 
-    fireEvent.click(screen.getByRole("button", { name: /brief me on this ranch/i }));
+    fireEvent.click(screen.getByRole("button", { name: /when would smoke reach here/i }));
 
     expect(await screen.findByText(/returned an invalid response/i)).toBeTruthy();
     expect(screen.getByText("Unavailable")).toBeTruthy();
