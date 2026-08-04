@@ -54,7 +54,7 @@ This is a self-assessment, not a predicted judge score. It separates demonstrate
 
 ### Demonstrated
 
-- The final candidate passed 187 tests across 15 files, passed ESLint, and completed the production build. The build retains one non-blocking large-client-chunk warning.
+- The final candidate passed 255 tests across 20 files, passed ESLint, and completed the production build. The build retains one non-blocking large-client-chunk warning.
 - A fresh saved-orchard probe on 2026-08-03 UTC returned 2 live FIRMS detections in 2 groups, successful NWS context for both groups, current AirNow evidence, 3 WFIGS incidents, and 1 intersecting perimeter. Results are time- and place-dependent.
 - Two live refreshes persisted as two bounded local runs. Historical detections deduplicated to two and four enriched alerts remained stable; the second unchanged refresh created no new alerts.
 - Fixture mode supplies a deterministic, clearly labeled story for repeatable judging.

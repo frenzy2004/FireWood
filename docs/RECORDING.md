@@ -95,12 +95,14 @@ Then set the window to a known size, from inside the terminal you will record
 in:
 
 ```bash
-printf '\e[8;32;100t'
+printf '\e[8;40;100t'
 stty size
 ```
 
-`stty size` should print `32 100`. Thirty-two rows fits the whole replay output
-without scrolling; a hundred columns keeps the 70-character rules from wrapping.
+`stty size` should print `40 100`. The replay prints 34 lines, one of which wraps
+to three rows at this width, so forty rows holds the whole output and the command
+above it without scrolling; a hundred columns keeps the 70-character rules from
+wrapping.
 
 Use a dark theme with reasonable contrast. The output uses bold, dim, amber,
 green, and cyan; a low-contrast pastel theme destroys the dim safety text.
@@ -330,13 +332,13 @@ recording. That continuity is the reason to record this at all.
 Roughly 90 seconds. Follow Part B of `docs/DEMO-SCRIPT.md` for the words.
 
 1. **The map, wide.** Green 120 km asset ring, amber detection points, the amber
-   plume corridor wedge opening toward 240 degrees, and the three hourly smoke
-   front arcs inside it at 36, 72 and 108 km. Let it sit for three seconds
-   before you move the mouse.
+   plume corridor wedge opening toward 240 degrees, and the four hourly smoke
+   front arcs inside it at 22, 58, 94 and 130 km — hours two through five, with
+   no arc at hour one. Let it sit for three seconds before you move the mouse.
 2. **The HUD strip** along the bottom of the map: `120 km radius`,
    `3 raw detections`, `toward asset, 26° offset`, `Smoke in 4.2 h`.
 3. **The smoke-arrival panel** in the activity inspector on the right: the
-   `4.2 h` headline, the `Moderate confidence` badge, the estimated arrival and
+   `4.2 h` headline, the `moderate confidence` badge, the estimated arrival and
    transit line, and the permanent small print that this does not predict where
    the fire will go.
 4. **Scroll once** to the evidence list, the context score contributions, and
@@ -387,7 +389,7 @@ Before you close the laptop:
 | Replay prints different numbers | You are on the wrong branch or have local edits to `lib/` | `git status`, then get back to a clean tree |
 | `asciinema: command not found` | Not installed | `brew install asciinema`, or use section 2 |
 | Recording is only a few seconds | You paced with silence instead of typing | Redo with the typed comment lines in 1.3 |
-| Output wraps and looks broken | Terminal too narrow | `printf '\e[8;32;100t'`, confirm with `stty size` |
+| Output wraps and looks broken | Terminal too narrow | `printf '\e[8;40;100t'`, confirm with `stty size` |
 | Colours are invisible on playback | Low-contrast terminal theme | Switch to a standard dark theme and retake |
 | npm banner clutters the recording | You omitted `--silent` | Use `npm run --silent replay` |
 | Upload prints a claim warning | Unregistered install | Open the claim URL immediately; otherwise it is deleted |

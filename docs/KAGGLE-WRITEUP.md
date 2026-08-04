@@ -25,8 +25,10 @@ scoring them zero, and estimates when smoke from each group reaches the asset.
 
 The map draws the estimate rather than only asserting it: a corridor wedge
 opening 50 degrees either side of the transport bearing, with hourly isochrone
-arcs placed at wind speed times elapsed time. Arcs beyond the validated range
-are omitted rather than clamped, so the map never implies more reach than the
+arcs placed by inverting the calibrated transit rather than re-deriving it, so
+nothing is drawn until the 1.4 hour correction has elapsed and the map cannot
+contradict the arrival time beside it. Arcs beyond the corridor range are
+omitted rather than clamped, so the map never implies more reach than the
 method has.
 
 **The line we do not cross.** EmberField does not predict fire spread. Fire
@@ -146,7 +148,7 @@ the corridor gate, which are now the reason the estimate is defensible.
 ## Build timeline
 
 The repository is larger than a one-day build looks, and the history says why:
-47 commits between 2026-08-03 20:48 and 2026-08-04 13:24, roughly 15,800 lines
+48 commits between 2026-08-03 20:48 and 2026-08-04 13:29, roughly 16,000 lines
 of TypeScript, written in one continuous session with heavy AI coding-assistant
 support and a deliberately narrow scope. Nothing was carried in from an earlier
 project. The commit log is the receipt and is worth reading.
@@ -174,4 +176,4 @@ project. The commit log is the receipt and is worth reading.
 EmberField is informational context. It is not an evacuation tool, a dispatch
 system, or an emergency-warning service. Follow local officials.
 
-<!-- word count: 1392 -->
+<!-- word count: 1416 -->

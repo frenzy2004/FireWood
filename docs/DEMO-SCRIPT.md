@@ -179,7 +179,8 @@ Switch from the terminal to the browser without changing the story.
 Point at the amber wedge opening away from the detections.
 
 > "The wedge is the plume corridor: 50 degrees either side of the 240 degree
-> transport bearing, drawn out to the range the estimate is actually validated
+> transport bearing, drawn a third again past the source — about 135 kilometres
+> here, and never past the 263 kilometre range the estimate is actually validated
 > over. The four arcs inside it are hourly smoke-front positions — 22, 58, 94
 > and 130 kilometres at hours two through five. They carry the same 1.4 hour
 > calibration as the arrival time, which is why there is no arc at hour one:

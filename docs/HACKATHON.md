@@ -129,7 +129,7 @@ Agriculture asset
 
 ## Responsible-AI position
 
-EmberField never claims that a FIRMS anomaly is a confirmed wildfire. It never turns detection count into acres, calls activity change confirmed spread, predicts arrival, or recommends evacuation. Missing data lowers confidence. The product is an informational triage surface that helps an operator decide what official information to check next.
+EmberField never claims that a FIRMS anomaly is a confirmed wildfire. It never turns detection count into acres, calls activity change confirmed spread, predicts where a fire will go, or recommends evacuation. It does estimate when smoke from an already-detected source reaches an asset, and that estimate is labelled as transport rather than spread, capped at moderate confidence, and withheld entirely when the wind is missing, calm, or blowing elsewhere. Missing data lowers confidence. The product is an informational triage surface that helps an operator decide what official information to check next.
 
 ## What to emphasize live
 

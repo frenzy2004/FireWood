@@ -12,7 +12,7 @@ Snapshot persistence and historical replay status: **COMPLETE FOR THE LOCAL PROT
 
 | Command | Recorded result |
 | --- | --- |
-| `npm test` | Passed: 15 test files, 187 tests |
+| `npm test` | Passed: 20 test files, 255 tests |
 | `npm run lint` | Passed with no ESLint findings |
 | `npm run build` | Passed; Vinext produced the app and six API routes |
 | `npm run db:local` | Passed; all versioned migrations applied, and the repeat run reported no pending migrations |
@@ -189,4 +189,4 @@ Then run `npm run dev` and manually verify:
 - public hosting, accounts, team sharing, and cloud synchronization;
 - reconstruction of historical NWS grids, AirNow readings, or prior risk scores in replay;
 - production security certification, emergency-service integration, and field validation;
-- any claim that EmberField predicts spread, arrival, evacuation need, or official danger.
+- any claim that EmberField predicts fire spread, evacuation need, or official danger. Smoke arrival is estimated, but only as transport from an already-detected source, capped at moderate confidence.
