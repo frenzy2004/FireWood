@@ -63,7 +63,7 @@ A real request through `/api/agent` used the installed `gemma4:12b` model and co
 The active evidence mode for this ranch is fixture [evidence:1].
 ```
 
-The successful warm run completed in about 26.2 seconds and returned `persistenceStatus: not-persisted`. A separate cold or queued run reached the fixed 45 second timeout and returned the explicit warm-up fallback. Warm the model before judging.
+The successful warm run completed in about 26.2 seconds and returned `persistenceStatus: not-persisted`. A separate cold or queued run reached the run timeout and returned the explicit warm-up fallback. Warm the model before judging.
 
 After the final tool-set review, a second real request proved the new native `geocode_location` path. Gemma selected the tool, the live US Census Geocoder returned `status: ok`, and Gemma produced `The Census source mode is live [evidence:1].` in two rounds and about 7.0 seconds. The trace reported `geocode_location`, a server-issued evidence reference, and live Census source state; the prompt, answer, and trace were not persisted.
 

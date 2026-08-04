@@ -16,6 +16,7 @@ Gemma chooses from an allowlisted set of evidence tools, explains current condit
 - Computes an explainable context score with explicit missing-data gating.
 - Estimates when smoke from each detection group reaches the asset, validated against the 2018 Camp Fire.
 - Draws the plume corridor and hourly smoke-front isochrones on the map, and shows arrival with a confidence that cannot exceed moderate.
+- Ranks every saved asset by how much attention it needs, soonest smoke arrival first, in a single agent call.
 - Shows raw points, grouped activity, official perimeters, source freshness, and a 24-hour timeline.
 - Produces deduplicated in-console alerts during load or refresh for new groups, new satellite confirmation, resumed activity, material score changes, and official matches.
 - Runs Gemma 4 12B locally through Ollama native function calling.
