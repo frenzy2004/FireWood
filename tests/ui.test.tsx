@@ -274,6 +274,18 @@ describe("EmberField console", () => {
     expect(screen.queryByText("New activity group")).toBeNull();
   });
 
+  it("frames the replay threat when a dashboard timeline marker is selected", async () => {
+    render(<Dashboard initialSnapshot={snapshot} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Select NOAA-21 detection at 2026-08-03T11:30:00Z" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Focus active threat" }).getAttribute("aria-pressed")).toBe("true");
+    });
+    expect(screen.getByText("Threat framed in fallback view")).toBeTruthy();
+    expect(screen.getAllByText(/Replay cutoff 2026-08-03T11:30:00Z/i).length).toBeGreaterThan(0);
+  });
+
   it("jumps a FIRMS marker to its exact replay time and emits its map focus", () => {
     const onFocus = vi.fn();
     render(<ReplayHarness onFocus={onFocus} />);

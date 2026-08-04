@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type DashboardSnapshot } from "../app/hooks/use-dashboard";
@@ -268,10 +268,6 @@ describe("EmberField smoke arrival", () => {
         focusRequest={{ id: 1, mode: "threat", groupId: "cluster-1" }}
       />,
     );
-
-    await act(async () => {
-      [...frames.values()].forEach((callback) => callback(0));
-    });
 
     expect(screen.getByRole("button", { name: "Focus active threat" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("Threat framed in fallback view")).toBeTruthy();

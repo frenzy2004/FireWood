@@ -158,6 +158,7 @@ export function MapCanvas({
   const [selection, setSelection] = useState<MapSelection>(null);
   const [focusMode, setFocusMode] = useState<MapFocusMode | "selection">("asset");
   const [focusAnnouncement, setFocusAnnouncement] = useState("Asset framed in fallback view");
+  const [dismissedFocusRequestId, setDismissedFocusRequestId] = useState(0);
   const mapRef = useRef<MapRef>(null);
   const handledFocusRequest = useRef(0);
 
@@ -172,30 +173,35 @@ export function MapCanvas({
     window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 0 : 700
   ), []);
 
-  const focusMapMode = useCallback((mode: MapFocusMode, groupId = "") => {
+  const moveMapToMode = useCallback((mode: MapFocusMode, groupId = "") => {
     if (!snapshot) return;
     const plan = buildMapFocusPlan(snapshot, mode, groupId);
-    setFocusMode(plan.mode);
     mapRef.current?.fitBounds(plan.bounds, {
       padding: plan.mode === "asset" ? 48 : plan.mode === "evidence" ? 56 : 72,
       maxZoom: plan.mode === "asset" ? 12 : plan.mode === "evidence" ? 11 : 10.5,
       duration: transitionDuration(),
     });
+    return plan;
+  }, [snapshot, transitionDuration]);
+
+  const focusMapMode = useCallback((mode: MapFocusMode, groupId = "", dismissRequest = true) => {
+    const plan = moveMapToMode(mode, groupId);
+    if (!plan) return;
+    setFocusMode(plan.mode);
+    if (dismissRequest && focusRequest) setDismissedFocusRequestId(focusRequest.id);
     const label = plan.mode === "asset" ? "Asset" : plan.mode === "evidence" ? "Evidence" : "Threat";
     setFocusAnnouncement(`${label} framed${canUseMap ? "" : " in fallback view"}`);
-  }, [canUseMap, snapshot, transitionDuration]);
+  }, [canUseMap, focusRequest, moveMapToMode]);
 
   useEffect(() => {
     if (!focusRequest || focusRequest.id === handledFocusRequest.current) return;
-    const frame = window.requestAnimationFrame(() => {
-      handledFocusRequest.current = focusRequest.id;
-      focusMapMode(focusRequest.mode, focusRequest.groupId);
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [focusMapMode, focusRequest]);
+    handledFocusRequest.current = focusRequest.id;
+    moveMapToMode(focusRequest.mode, focusRequest.groupId);
+  }, [focusRequest, moveMapToMode]);
 
   const focusMapSelection = useCallback((nextSelection: Exclude<MapSelection, null>) => {
     if (!snapshot) return;
+    if (focusRequest) setDismissedFocusRequestId(focusRequest.id);
     setSelection(nextSelection);
     if (nextSelection.kind === "group") {
       onSelect(nextSelection.id);
@@ -213,7 +219,7 @@ export function MapCanvas({
       duration: transitionDuration(),
     });
     setFocusAnnouncement(`Selected evidence focused${canUseMap ? "" : " in fallback view"}`);
-  }, [canUseMap, onSelect, snapshot, transitionDuration]);
+  }, [canUseMap, focusRequest, onSelect, snapshot, transitionDuration]);
 
   if (!snapshot) {
     return (
@@ -310,6 +316,11 @@ export function MapCanvas({
     `${snapshot.incidents.length} official incident${snapshot.incidents.length === 1 ? "" : "s"}`,
     `${snapshot.perimeters.length} official perimeter${snapshot.perimeters.length === 1 ? "" : "s"}`,
   ].join(", ");
+  const externalFocusActive = focusRequest !== undefined && focusRequest.id !== dismissedFocusRequestId;
+  const activeFocusMode = externalFocusActive ? focusRequest.mode : focusMode;
+  const activeFocusAnnouncement = externalFocusActive
+    ? `${focusRequest.mode === "asset" ? "Asset" : focusRequest.mode === "evidence" ? "Evidence" : "Threat"} framed${canUseMap ? "" : " in fallback view"}`
+    : focusAnnouncement;
 
   return (
     <section className="map-canvas panel" aria-label="Evidence map">
@@ -318,7 +329,7 @@ export function MapCanvas({
           ref={mapRef}
           initialViewState={{ longitude: asset.location.lon, latitude: asset.location.lat, zoom: 9.4 }}
           mapStyle={style}
-          onLoad={() => focusMapMode("asset")}
+          onLoad={() => focusMapMode("asset", "", false)}
         >
           <NavigationControl position="top-right" showCompass />
           <FullscreenControl position="top-right" />
@@ -474,13 +485,13 @@ export function MapCanvas({
 
       <div className="map-toolbar" aria-label="Map controls">
         <div className="map-focus-controls" aria-label="Map focus">
-          <button className="map-focus-button" type="button" onClick={() => focusMapMode("asset")} aria-label="Focus asset" aria-pressed={focusMode === "asset"} title="Focus asset">
+          <button className="map-focus-button" type="button" onClick={() => focusMapMode("asset")} aria-label="Focus asset" aria-pressed={activeFocusMode === "asset"} title="Focus asset">
             <MapPin size={15} weight="fill" /><span>Asset</span>
           </button>
-          <button className="map-focus-button" type="button" onClick={() => focusMapMode("evidence")} aria-label="Fit all evidence" aria-pressed={focusMode === "evidence"} title="Fit all evidence">
+          <button className="map-focus-button" type="button" onClick={() => focusMapMode("evidence")} aria-label="Fit all evidence" aria-pressed={activeFocusMode === "evidence"} title="Fit all evidence">
             <Stack size={15} weight="fill" /><span>Evidence</span>
           </button>
-          <button className="map-focus-button" type="button" onClick={() => focusMapMode("threat", selectedGroupId)} aria-label="Focus active threat" aria-pressed={focusMode === "threat"} title="Focus active threat">
+          <button className="map-focus-button" type="button" onClick={() => focusMapMode("threat", selectedGroupId)} aria-label="Focus active threat" aria-pressed={activeFocusMode === "threat"} title="Focus active threat">
             <Target size={15} weight="bold" /><span>Threat</span>
           </button>
         </div>
@@ -501,7 +512,7 @@ export function MapCanvas({
 
       {detail && selection ? <MapEvidenceCard detail={detail} onClose={() => setSelection(null)} onFocus={() => focusMapSelection(selection)} /> : null}
 
-      <span className="sr-only" aria-live="polite">{focusAnnouncement}</span>
+      <span className="sr-only" aria-live="polite">{activeFocusAnnouncement}</span>
 
       <div className="map-hud">
         <span><Crosshair size={15} /> {asset.radiusKm.toFixed(0)} km radius</span>
