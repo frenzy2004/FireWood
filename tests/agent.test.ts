@@ -17,6 +17,7 @@ import {
 } from "../lib/agent/tools";
 import {
   AGENT_MAX_CALLS_PER_ROUND,
+  AGENT_TIMEOUT_MS,
   isAnswerGrounded,
   runAgent,
   type AgentTraceEntry,
@@ -381,7 +382,7 @@ describe("Gemma native tool loop", () => {
     expect(fetchImplementation).not.toHaveBeenCalled();
   });
 
-  it("enforces one 45-second deadline across the loop", async () => {
+  it("enforces one wall-clock deadline across the loop", async () => {
     vi.useFakeTimers();
     const timeoutFetch: typeof fetch = async (_input, init) =>
       new Promise<Response>((_resolve, reject) => {
@@ -390,12 +391,12 @@ describe("Gemma native tool loop", () => {
         );
       });
     const pending = runAgent(runInput(timeoutFetch));
-    await vi.advanceTimersByTimeAsync(45_000);
+    await vi.advanceTimersByTimeAsync(AGENT_TIMEOUT_MS);
 
     await expect(pending).resolves.toMatchObject({ status: "timeout" });
   });
 
-  it("applies the 45-second deadline while an evidence tool is stalled", async () => {
+  it("applies the wall-clock deadline while an evidence tool is stalled", async () => {
     vi.useFakeTimers();
     const ollama = mockOllama([
       toolCall("inspect_asset", { assetId: asset.id }),
@@ -410,7 +411,7 @@ describe("Gemma native tool loop", () => {
       repository,
       snapshotService: stalledSnapshotService,
     }).then(settled);
-    await vi.advanceTimersByTimeAsync(45_000);
+    await vi.advanceTimersByTimeAsync(AGENT_TIMEOUT_MS);
     await Promise.resolve();
 
     expect(settled).toHaveBeenCalledWith(

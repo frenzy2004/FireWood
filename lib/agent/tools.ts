@@ -140,7 +140,7 @@ export const AGENT_TOOL_DEFINITIONS: AgentToolDefinition[] = [
     function: {
       name: "get_smoke_arrival",
       description:
-        "Estimate when smoke from each detection group reaches the asset, using straight-line advection from the measured wind. Returns transit hours, estimated arrival time, and how far the asset sits off the plume corridor. This is a smoke-transport estimate, not a fire-spread prediction.",
+        "Estimate when smoke from each detection group reaches the asset, using straight-line advection from the measured wind. Omit clusterId to get every group at once, ranked with the soonest arrival first. Returns transit hours, estimated arrival time, and how far the asset sits off the plume corridor. This is a smoke-transport estimate, not a fire-spread prediction.",
       parameters: objectParameters({
         assetId: assetIdProperty,
         clusterId: clusterIdProperty,
@@ -189,6 +189,17 @@ export const AGENT_TOOL_DEFINITIONS: AgentToolDefinition[] = [
     },
   },
 ];
+
+/**
+ * Most arrival rows returned in one result.
+ *
+ * boundToolResult caps a tool result at 6 KB. Each arrival row carries a
+ * summary sentence, so a live snapshot with 28 groups overflowed that budget
+ * and was replaced by a truncated string preview — structured evidence the
+ * grounding validator could no longer read. Rows are ranked before this cut,
+ * so what survives is what an operator would look at first.
+ */
+const SMOKE_ARRIVAL_REPORT_LIMIT = 3;
 
 const idSchema = z.string().trim().min(1).max(128);
 const clusterIdSchema = z.string().trim().min(1).max(160);
@@ -565,6 +576,18 @@ export async function executeAgentTool(
       row.arrival.status === "likely-arrived" ||
       row.arrival.status === "beyond-range",
     );
+    // Rank before truncating, so the rows that survive are the ones an operator
+    // needs: soonest arrival first, then the rest of the corridor, then groups
+    // the wind is carrying elsewhere.
+    const statusRank: Record<string, number> = {
+      inbound: 0, "likely-arrived": 1, "beyond-range": 2,
+      "off-plume": 3, "calm-wind": 4, "insufficient-data": 5,
+    };
+    const ranked = [...arrivals].sort((left, right) => {
+      const byStatus = (statusRank[left.arrival.status] ?? 9) - (statusRank[right.arrival.status] ?? 9);
+      if (byStatus !== 0) return byStatus;
+      return (left.arrival.hoursUntilArrival ?? Infinity) - (right.arrival.hoursUntilArrival ?? Infinity);
+    });
     const inbound = arrivals
       .filter((row) => row.arrival.status === "inbound")
       .sort(
@@ -581,7 +604,15 @@ export async function executeAgentTool(
         referenceInstant: snapshot.generatedAt,
         method:
           "Straight-line advection from the detection centroid using measured wind, corrected for observed lateness. Not a fire-spread prediction.",
-        arrivals,
+        // Capped so the payload stays inside the tool byte budget. A live
+        // snapshot can hold dozens of groups; returning all of them pushed the
+        // result past the limit, and a truncated result reaches the model as a
+        // clipped string rather than structured evidence — which silently
+        // removed the model's ability to ground any claim about it.
+        arrivals: ranked.slice(0, SMOKE_ARRIVAL_REPORT_LIMIT),
+        reportedArrivals: Math.min(ranked.length, SMOKE_ARRIVAL_REPORT_LIMIT),
+        totalArrivals: ranked.length,
+        omittedArrivals: Math.max(0, ranked.length - SMOKE_ARRIVAL_REPORT_LIMIT),
         soonestInbound: inbound[0] ?? null,
         missingData: arrivals
           .flatMap((row) => row.arrival.missingData)
