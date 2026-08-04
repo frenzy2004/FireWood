@@ -187,8 +187,8 @@ export function MapCanvas({
 
   useEffect(() => {
     if (!focusRequest || focusRequest.id === handledFocusRequest.current) return;
-    handledFocusRequest.current = focusRequest.id;
     const frame = window.requestAnimationFrame(() => {
+      handledFocusRequest.current = focusRequest.id;
       focusMapMode(focusRequest.mode, focusRequest.groupId);
     });
     return () => window.cancelAnimationFrame(frame);

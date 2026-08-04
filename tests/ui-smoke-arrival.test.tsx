@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type DashboardSnapshot } from "../app/hooks/use-dashboard";
@@ -234,6 +234,46 @@ describe("EmberField smoke arrival", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Focus active threat" }).getAttribute("aria-pressed")).toBe("true");
     });
+    expect(screen.getByText("Threat framed in fallback view")).toBeTruthy();
+  });
+
+  it("does not lose a replay focus request when the filtered snapshot rerenders before the camera frame", async () => {
+    let frameId = 0;
+    const frames = new Map<number, FrameRequestCallback>();
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
+      frameId += 1;
+      frames.set(frameId, callback);
+      return frameId;
+    }));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn((id: number) => {
+      frames.delete(id);
+    }));
+    const { rerender } = render(
+      <MapCanvas snapshot={inboundSnapshot} selectedGroupId="cluster-1" onSelect={vi.fn()} />,
+    );
+
+    rerender(
+      <MapCanvas
+        snapshot={{ ...inboundSnapshot, generatedAt: "2026-08-03T09:00:00.000Z" }}
+        selectedGroupId="cluster-1"
+        onSelect={vi.fn()}
+        focusRequest={{ id: 1, mode: "threat", groupId: "cluster-1" }}
+      />,
+    );
+    rerender(
+      <MapCanvas
+        snapshot={{ ...inboundSnapshot, generatedAt: "2026-08-03T09:00:00.001Z" }}
+        selectedGroupId="cluster-1"
+        onSelect={vi.fn()}
+        focusRequest={{ id: 1, mode: "threat", groupId: "cluster-1" }}
+      />,
+    );
+
+    await act(async () => {
+      [...frames.values()].forEach((callback) => callback(0));
+    });
+
+    expect(screen.getByRole("button", { name: "Focus active threat" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("Threat framed in fallback view")).toBeTruthy();
   });
 
