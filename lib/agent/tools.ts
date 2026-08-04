@@ -525,6 +525,11 @@ export async function executeAgentTool(
         now: referenceInstant,
       }),
     }));
+    const downwind = arrivals.filter((row) =>
+      row.arrival.status === "inbound" ||
+      row.arrival.status === "likely-arrived" ||
+      row.arrival.status === "beyond-range",
+    );
     const inbound = arrivals
       .filter((row) => row.arrival.status === "inbound")
       .sort(
@@ -546,12 +551,17 @@ export async function executeAgentTool(
         missingData: arrivals
           .flatMap((row) => row.arrival.missingData)
           .filter((value, index, all) => all.indexOf(value) === index),
+        // A group can sit squarely in the corridor and still be absent from
+        // `inbound` — "likely-arrived" and "beyond-range" are both downwind.
+        // Reporting those as "nothing upwind" would understate the hazard.
         emptyMeaning:
           snapshot.groups.length === 0
             ? "No recent satellite detections were returned; no smoke source is known, which does not establish that none exists."
-            : inbound.length === 0
-              ? "No detection group is currently upwind of this asset. Wind shifts invalidate this immediately."
-              : null,
+            : downwind.length === 0
+              ? "No detection group sits in the downwind plume corridor of this asset. Wind shifts invalidate this immediately."
+              : inbound.length === 0
+                ? "Every downwind group has either already passed its estimated arrival or lies beyond the validated range. Smoke may be present now."
+                : null,
       },
       sourceStatus: sources,
     };

@@ -181,7 +181,7 @@ describe("EmberField smoke arrival", () => {
       expect(hours).toBeGreaterThan(0);
       expect(Number.isFinite(hours)).toBe(true);
     }
-    // 33.5 km sits inside both the 45 km asset radius and the 300 km envelope.
+    // 33.5 km sits inside both the 45 km asset radius and the validated envelope.
     expect(screen.getAllByText("33.5 km")).toHaveLength(2);
     expect(within(await mapHud()).getByText("toward asset, 0° offset")).toBeTruthy();
   });

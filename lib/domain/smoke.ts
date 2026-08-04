@@ -49,8 +49,15 @@ export const PLUME_HALF_WIDTH_DEG = 50;
 /** Below this wind speed the transport direction is not meaningful. */
 export const MIN_TRANSPORT_WIND_MPS = 1;
 
-/** Beyond this range the estimate is outside anything we have checked. */
-export const MAX_VALIDATED_RANGE_KM = 300;
+/**
+ * Beyond this range the estimate is outside anything we have checked.
+ *
+ * Set to the furthest monitor in the Camp Fire cohort — San Mateo at 262.163 km
+ * — rounded up to the kilometre so that monitor stays inside its own validation.
+ * A rounder, larger envelope would report moderate confidence across a band no
+ * observation supports, which is exactly the claim this module refuses to make.
+ */
+export const MAX_VALIDATED_RANGE_KM = 263;
 
 export type SmokeArrivalStatus =
   | "inbound"
@@ -117,9 +124,13 @@ export function estimateSmokeArrival(input: SmokeArrivalInput): SmokeArrival {
   const assetBearing = bearingDegrees(input.source, input.asset);
   const detectedAtMs = Date.parse(input.detectedAt);
 
+  // Finiteness, not just null. A NaN wind speed passes `=== null`, then passes
+  // `< MIN_TRANSPORT_WIND_MPS` because every NaN comparison is false, and ends
+  // up in `new Date(NaN).toISOString()`, which throws. Upstream adapters parse
+  // numbers out of third-party payloads, so NaN is reachable.
   const missingData: string[] = [];
-  if (input.windSpeedMps === null) missingData.push("wind-speed");
-  if (input.windFromDeg === null) missingData.push("wind-direction");
+  if (!Number.isFinite(input.windSpeedMps)) missingData.push("wind-speed");
+  if (!Number.isFinite(input.windFromDeg)) missingData.push("wind-direction");
   if (!Number.isFinite(detectedAtMs)) missingData.push("detection-time");
 
   const base = {

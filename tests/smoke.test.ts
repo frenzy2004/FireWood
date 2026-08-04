@@ -20,7 +20,9 @@ const CAMP_FIRE_WIND = { windFromDeg: 60, windSpeedMps: 10 };
  *
  * Observed arrival is the first hour each monitor exceeded three times its own
  * 5-7 November median, measured in hours from ignition. Every California
- * monitor within 300 km and 50 degrees of the transport bearing is included —
+ * monitor within 300 km and 50 degrees of the transport bearing is included
+ * (the cohort defines the envelope, so the selection radius is wider than
+ * MAX_VALIDATED_RANGE_KM by construction) —
  * the two that the model gets badly wrong are kept deliberately, because a
  * validation fixture that quietly drops its failures is not a validation.
  */
@@ -83,7 +85,13 @@ describe("estimateSmokeArrival — Camp Fire validation", () => {
     const sorted = signedErrors()
       .map((row) => row.error)
       .sort((a, b) => a - b);
-    const median = (sorted[6] + sorted[7]) / 2;
+    // Derived from length: hardcoded indices would silently stop being the
+    // median if a monitor were added, and this fixture exists to catch drift.
+    const middle = Math.floor(sorted.length / 2);
+    const median =
+      sorted.length % 2 === 0
+        ? (sorted[middle - 1] + sorted[middle]) / 2
+        : sorted[middle];
     // The bias correction is calibrated to remove systematic lateness.
     expect(Math.abs(median)).toBeLessThan(0.5);
   });
@@ -122,6 +130,31 @@ describe("estimateSmokeArrival — gating", () => {
     expect(arrival.confidence).toBe("none");
     expect(arrival.missingData).toEqual(["wind-speed", "wind-direction"]);
     expect(arrival.estimatedArrivalAt).toBeNull();
+  });
+
+  it("treats a non-finite wind as missing rather than crashing", () => {
+    // NaN passes `=== null`, and every NaN comparison is false so it also
+    // passes the calm-wind floor. It used to reach new Date(NaN).toISOString(),
+    // which throws. Upstream adapters parse numbers out of third-party
+    // payloads, so NaN is reachable.
+    const arrival = estimateSmokeArrival({
+      ...base,
+      windFromDeg: Number.NaN,
+      windSpeedMps: Number.NaN,
+    });
+    expect(arrival.status).toBe("insufficient-data");
+    expect(arrival.missingData).toEqual(["wind-speed", "wind-direction"]);
+    expect(arrival.estimatedArrivalAt).toBeNull();
+  });
+
+  it("treats an unparseable detection time as missing", () => {
+    const arrival = estimateSmokeArrival({
+      ...base,
+      ...CAMP_FIRE_WIND,
+      detectedAt: "not a timestamp",
+    });
+    expect(arrival.status).toBe("insufficient-data");
+    expect(arrival.missingData).toContain("detection-time");
   });
 
   it("refuses a transport direction in calm wind", () => {
