@@ -161,9 +161,12 @@ project. The commit log is the receipt and is worth reading.
   were being rejected for ordinary synonyms — "detection group" cannot be
   checked when the payload holds `detectionCount` and no word for "group". The
   fix was to make each evidence tool emit a plain-language summary, so the
-  vocabulary and the numbers arrive together. Three consecutive local runs now
-  return grounded briefings. A model that ignores that phrasing will still be
-  rejected, and the validator remains a guardrail rather than a proof.
+  vocabulary and the numbers arrive together. Grounded briefings went from none
+  observed to roughly a third of runs, but the rate is unstable: whether a 12B
+  model quotes the supplied phrasing or paraphrases it is not something the
+  system controls. Tool selection is correct on every run; the prose is not.
+  The deterministic panels stay authoritative, which is why the demo leads with
+  the offline replay.
 - One well-observed event is not a validated model. The +1.4h correction is a
   single measured median, not a fit.
 - Straight-line advection ignores terrain, mixing height, and diurnal wind shift.
@@ -180,4 +183,4 @@ project. The commit log is the receipt and is worth reading.
 EmberField is informational context. It is not an evacuation tool, a dispatch
 system, or an emergency-warning service. Follow local officials.
 
-<!-- word count: 1416 -->
+<!-- word count:     1493 -->

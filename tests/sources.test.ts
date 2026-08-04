@@ -11,6 +11,7 @@ import {
   parseCensusResponse,
 } from "../lib/sources/census";
 import {
+  FIRMS_QUERY_DAYS,
   FIRMS_SOURCES,
   fetchFirmsDetections,
   parseFirmsCsv,
@@ -473,7 +474,7 @@ describe("live source adapters", () => {
     expect(result.status).toBe("ok");
     expect(result.detections).toHaveLength(FIRMS_SOURCES.length);
     expect(requested).toHaveLength(FIRMS_SOURCES.length);
-    expect(requested.every((url) => url.endsWith("/1"))).toBe(true);
+    expect(requested.every((url) => url.endsWith(`/${FIRMS_QUERY_DAYS}`))).toBe(true);
 
     const rejectedFetch: typeof fetch = async () => {
       throw new TypeError("request failed for a credential-bearing URL");
@@ -689,5 +690,70 @@ describe("live source adapters", () => {
     expect(() => parseWfigsGeoJson(oversized, "perimeters")).toThrow(
       "WFIGS perimeter geometry exceeds the coordinate limit",
     );
+  });
+});
+
+describe("FIRMS rolling window", () => {
+  const bbox = {
+    west: -117.19,
+    south: 40.6,
+    east: -115.89,
+    north: 41.5,
+    crossesAntimeridian: false,
+  };
+  const row = (date: string, time: string) =>
+    `${41.05},${-116.54},330.1,0.4,0.4,${date},${time},N20,VIIRS,n,2.0NRT,295.2,13.8,N`;
+  const header =
+    "latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_ti5,frp,daynight";
+
+  it("keeps detections inside the window and drops older ones", async () => {
+    // Requested at 06:00 UTC on the 4th. FIRMS day range 2 returns both the
+    // 3rd and the 4th; only the 3rd at 20:53 is inside 24 hours.
+    const csv = [header, row("2026-08-03", "2053"), row("2026-08-02", "2050")].join("\n");
+    const fetchImplementation: typeof fetch = async () =>
+      new Response(csv, { status: 200, headers: { "Content-Type": "text/csv" } });
+
+    const result = await fetchFirmsDetections(
+      { mapKey: "test-key", bbox },
+      { fetchImplementation, now: () => new Date("2026-08-04T06:00:00Z") },
+    );
+
+    expect(result.status).toBe("ok");
+    // One surviving row per configured feed.
+    expect(result.detections).toHaveLength(FIRMS_SOURCES.length);
+    for (const detection of result.detections) {
+      expect(detection.acquiredAt).toBe("2026-08-03T20:53:00.000Z");
+    }
+  });
+
+  it("surfaces an overpass that a calendar-day query would have missed", async () => {
+    // The defect this guards: at 06:00 UTC the current UTC day holds no US
+    // West overpass at all, so a one-day query returned an empty map while a
+    // fire was burning. The most recent pass was the previous evening.
+    const csv = [header, row("2026-08-03", "2053")].join("\n");
+    const fetchImplementation: typeof fetch = async () =>
+      new Response(csv, { status: 200, headers: { "Content-Type": "text/csv" } });
+
+    const result = await fetchFirmsDetections(
+      { mapKey: "test-key", bbox },
+      { fetchImplementation, now: () => new Date("2026-08-04T06:00:00Z") },
+    );
+
+    expect(result.detections.length).toBeGreaterThan(0);
+    expect(result.observedAt).toBe("2026-08-03T20:53:00.000Z");
+  });
+
+  it("drops everything once the window has fully elapsed", async () => {
+    const csv = [header, row("2026-08-03", "2053")].join("\n");
+    const fetchImplementation: typeof fetch = async () =>
+      new Response(csv, { status: 200, headers: { "Content-Type": "text/csv" } });
+
+    const result = await fetchFirmsDetections(
+      { mapKey: "test-key", bbox },
+      { fetchImplementation, now: () => new Date("2026-08-05T06:00:00Z") },
+    );
+
+    expect(result.detections).toEqual([]);
+    expect(result.observedAt).toBeNull();
   });
 });

@@ -17,7 +17,21 @@ import {
 } from "./tools";
 
 export const GEMMA_MODEL = "gemma4:12b";
-export const AGENT_TIMEOUT_MS = 45_000;
+/**
+ * Wall-clock budget for one agent run, covering every round and tool call.
+ *
+ * Sized to the loop it has to finish rather than to a round number. A warm
+ * local gemma4:12b spends roughly 10-12 seconds per round, and AGENT_MAX_ROUNDS
+ * is 6, so the previous 45 second budget could not accommodate the rounds the
+ * loop is allowed to take: measured against live evidence with 28 activity
+ * groups, the model explored three groups over four rounds and was cut off
+ * mid-run, twice in a row. Fixture runs fitted only because they settle in
+ * about 25 seconds.
+ *
+ * A local console can afford to wait; it cannot afford to fail whenever the
+ * model does the multi-round evidence gathering it is designed to do.
+ */
+export const AGENT_TIMEOUT_MS = 90_000;
 export const AGENT_MAX_ROUNDS = 6;
 // Sized to the allowlist so the model can exercise every evidence tool in a
 // single round. Raise this alongside AGENT_TOOL_NAMES.

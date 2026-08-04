@@ -48,6 +48,31 @@ export interface FirmsPayload {
 }
 
 const FIRMS_ENDPOINT = "https://firms.modaps.eosdis.nasa.gov/api/area/csv";
+
+/**
+ * Days requested from FIRMS, before the rolling-window filter below.
+ *
+ * FIRMS day ranges are calendar days in UTC, not a rolling window. VIIRS is on
+ * a polar orbiter, so a given longitude is only overflown a couple of times a
+ * day — the US West sees its passes around 20:00-21:00 UTC. Asking for one day
+ * therefore returns nothing at all for most of the UTC day: measured live at
+ * 06:50 UTC against an actively burning fire, `/1` returned 0 detections across
+ * all three satellites while `/2` returned 1,537.
+ *
+ * An operator opening the console in the morning would have seen an empty map
+ * with a fire burning 40 km away. Two days guarantees at least one overpass is
+ * in range regardless of the hour.
+ */
+export const FIRMS_QUERY_DAYS = 2;
+
+/**
+ * How far back a detection may be and still count as current.
+ *
+ * Applied after fetching so the console shows a true rolling 24 hours rather
+ * than "however much of today has happened so far". Without this, widening the
+ * query above would silently start surfacing detections up to 48 hours old.
+ */
+export const FIRMS_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 const FIRMS_TIMEOUT_MS = 12_000;
 const FIRMS_MAXIMUM_BYTES = 2_000_000;
 
@@ -181,10 +206,11 @@ export async function fetchFirmsDetections(
   ].join(",");
   const load = async (): Promise<FirmsPayload> => {
     const fetchImplementation = dependencies.fetchImplementation ?? fetch;
+    const requestedAtMs = Date.parse(utcNow(dependencies.now));
     const detections = (
       await Promise.all(
         FIRMS_SOURCES.map(async (source) => {
-          const url = `${FIRMS_ENDPOINT}/${encodeURIComponent(input.mapKey)}/${source}/${envelope}/1`;
+          const url = `${FIRMS_ENDPOINT}/${encodeURIComponent(input.mapKey)}/${source}/${envelope}/${FIRMS_QUERY_DAYS}`;
           const response = await fetchWithTimeout(
             "FIRMS",
             url,
@@ -197,7 +223,16 @@ export async function fetchFirmsDetections(
           return parseFirmsCsv(csv, source);
         }),
       )
-    ).flat();
+    )
+      .flat()
+      .filter((detection) => {
+        // Rolling window, not a calendar day. Detections with an unparseable
+        // acquisition time are kept rather than silently dropped — a bad
+        // timestamp is a data-quality signal, not grounds for deletion.
+        const acquiredAtMs = Date.parse(detection.acquiredAt);
+        if (!Number.isFinite(acquiredAtMs)) return true;
+        return requestedAtMs - acquiredAtMs <= FIRMS_MAX_AGE_MS;
+      });
 
     return {
       mode: "live",
