@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgentPanel } from "../app/components/AgentPanel";
+import { ActivityInspector } from "../app/components/ActivityInspector";
 import { SetupPanel } from "../app/components/SetupPanel";
 import { applyReplayState, FULL_REPLAY_STATE } from "../app/components/TimelineDock";
 import { type DashboardSnapshot, deriveConsoleAlerts } from "../app/hooks/use-dashboard";
@@ -115,6 +116,45 @@ afterEach(() => {
 });
 
 describe("EmberField console", () => {
+  it("keeps independent live evidence visible when FIRMS returns no detections", () => {
+    const incidents = Array.from({ length: 6 }, (_, index) => ({
+      id: `incident-${index + 1}`,
+      name: `Official incident ${index + 1}`,
+      location: { lat: 41.1 + index * 0.01, lon: -116.5 },
+    }));
+    const liveSnapshot: DashboardSnapshot = {
+      ...snapshot,
+      mode: "live",
+      assetWeather: {
+        windSpeedMps: 6.1,
+        windFromDeg: 235,
+        relativeHumidityPct: 22,
+        quality: "direct-fresh",
+        observedAt: "2026-08-03T11:00:00.000Z",
+      },
+      detections: [],
+      groups: [],
+      incidents,
+      air: null,
+      sources: {
+        firms: { ...snapshot.sources.firms, mode: "live", status: "ok", observedAt: null },
+        nws: { ...snapshot.sources.nws, mode: "live", status: "ok" },
+        airnow: { ...snapshot.sources.airnow, mode: "live", status: "ok", observedAt: null },
+        wfigs: { ...snapshot.sources.wfigs, mode: "live", status: "ok" },
+      },
+    };
+
+    render(<ActivityInspector snapshot={liveSnapshot} selectedGroupId="" />);
+
+    expect(screen.getByRole("heading", { name: "No recent FIRMS detections" })).toBeTruthy();
+    expect(screen.getByText("6 nearby official incidents")).toBeTruthy();
+    expect(screen.getByText("Asset weather")).toBeTruthy();
+    expect(screen.getByText(/6\.1 m\/s from 235°/i)).toBeTruthy();
+    expect(screen.getByText(/22% humidity/i)).toBeTruthy();
+    expect(screen.getByLabelText(/NASA FIRMS live ok/i)).toBeTruthy();
+    expect(screen.getByText(/A successful empty result does not establish that no fire exists/i)).toBeTruthy();
+  });
+
   it("labels the displayed fixture snapshot, full freshness, and permanent safety limits", async () => {
     render(<Dashboard initialSnapshot={snapshot} />);
 

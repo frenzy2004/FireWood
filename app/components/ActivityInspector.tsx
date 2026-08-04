@@ -15,6 +15,70 @@ import {
 const title = (value: string) => value.replaceAll("-", " ");
 const finite = (value: number | null | undefined) => typeof value === "number" && Number.isFinite(value);
 
+function SourceFreshness({ snapshot }: { snapshot: DashboardSnapshot }) {
+  return <section className="source-freshness" aria-label="Source results">
+    <p className="eyebrow">Source results</p>
+    {Object.values(snapshot.sources).map((source) => <div
+      key={source.source}
+      className={`source-row source-${source.status}`}
+      aria-label={`${source.source} ${source.mode} ${title(source.status)}`}
+    >
+      <span><strong>{source.source}</strong><small>{source.mode} · {title(source.status)}{source.replayState ? ` · replay ${title(source.replayState)}` : ""}</small></span>
+      <small>fetched {formatUtc(source.fetchedAt)}<br />observed {formatUtc(source.observedAt)}{source.error ? <><br />{source.error.code}: {source.error.message}</> : null}</small>
+    </div>)}
+  </section>;
+}
+
+function EmptyActivityInspector({
+  snapshot,
+  replayCutoff,
+}: {
+  snapshot: DashboardSnapshot;
+  replayCutoff?: string | null;
+}) {
+  const weather = snapshot.assetWeather;
+  const incidentCount = snapshot.incidents.length;
+  const isLive = snapshot.mode === "live";
+  const firmsSucceeded = snapshot.sources.firms.status === "ok";
+  const airQuality = finite(snapshot.air?.pm25UgM3)
+    ? `${snapshot.air?.pm25UgM3} µg/m³ PM2.5`
+    : finite(snapshot.air?.aqi)
+      ? `AQI ${snapshot.air?.aqi}`
+      : snapshot.sources.airnow.status === "ok"
+        ? "No nearby AirNow observation returned"
+        : `AirNow ${title(snapshot.sources.airnow.status)}`;
+
+  return <aside className="inspector panel empty-inspector" aria-label="Activity inspector">
+    <div className="panel-heading"><div><p className="eyebrow">Activity inspector</p><h2>{isLive ? "No recent FIRMS detections" : "No detections at this replay time"}</h2></div><span className={`band ${firmsSucceeded ? "" : "limited"}`}>{firmsSucceeded ? "Valid result" : title(snapshot.sources.firms.status)}</span></div>
+    <p className="empty-evidence-explanation">
+      {isLive && firmsSucceeded
+        ? "NASA FIRMS returned a successful empty result for this asset radius. A successful empty result does not establish that no fire exists."
+        : "No satellite detections are included at this replay position. Absence of detections does not establish that no fire exists."}
+    </p>
+    {replayCutoff ? <p className="replay-note"><strong>Replay cutoff {formatUtc(replayCutoff)}</strong><br />Only observations at or before this exact source timestamp are visible.</p> : null}
+    <div className="independent-evidence-grid">
+      <section className="independent-evidence-card" aria-label="Asset weather">
+        <p className="eyebrow"><CloudSun size={14} /> Asset weather</p>
+        {weather
+          ? <><strong>{finite(weather.windSpeedMps) ? `${weather.windSpeedMps?.toFixed(1)} m/s from ${weather.windFromDeg ?? "unknown"}°` : "Wind unavailable"}</strong><span>{finite(weather.relativeHumidityPct) ? `${weather.relativeHumidityPct?.toFixed(0)}% humidity` : "Humidity unavailable"}</span><small>Observed {formatUtc(weather.observedAt)}</small></>
+          : <><strong>Weather unavailable</strong><span>NWS {title(snapshot.sources.nws.status)}</span></>}
+      </section>
+      <section className="independent-evidence-card" aria-label="Air quality context">
+        <p className="eyebrow"><Drop size={14} /> Air quality</p>
+        <strong>{airQuality}</strong>
+        <small>Observed {formatUtc(snapshot.air?.observedAt ?? snapshot.sources.airnow.observedAt)}</small>
+      </section>
+    </div>
+    <section className="nearby-incidents" aria-label="Nearby official incidents">
+      <div className="panel-heading"><div><p className="eyebrow">WFIGS official context</p><h3>{incidentCount} nearby official incident{incidentCount === 1 ? "" : "s"}</h3></div><WarningCircle size={22} /></div>
+      {incidentCount > 0
+        ? <ul>{snapshot.incidents.slice(0, 8).map((incident) => <li key={incident.id}><strong>{incident.name}</strong><span>{incident.location.lat.toFixed(3)}, {incident.location.lon.toFixed(3)}</span></li>)}</ul>
+        : <p className="quiet">No official WFIGS incidents were returned inside this asset radius.</p>}
+    </section>
+    <SourceFreshness snapshot={snapshot} />
+  </aside>;
+}
+
 export function ActivityInspector({
   snapshot,
   selectedGroupId,
@@ -27,7 +91,8 @@ export function ActivityInspector({
   replayCutoff?: string | null;
 }) {
   const group = snapshot?.groups.find((candidate) => candidate.cluster.id === selectedGroupId) ?? snapshot?.groups[0];
-  if (!snapshot || !group) return <aside className="inspector panel" aria-label="Activity inspector"><p className="eyebrow">Activity inspector</p><h2>No recent satellite detections</h2><p>No recent satellite detections were returned for this replay position. Absence of detections does not mean absence of fire.</p></aside>;
+  if (!snapshot) return <aside className="inspector panel" aria-label="Activity inspector"><p className="eyebrow">Activity inspector</p><h2>Waiting for evidence</h2><p>Select an asset or refresh its evidence snapshot.</p></aside>;
+  if (!group) return <EmptyActivityInspector snapshot={snapshot} replayCutoff={replayCutoff} />;
   const assessment = group.assessment;
   const score = assessment.score === null
     ? "Unassessed"
@@ -103,7 +168,7 @@ export function ActivityInspector({
     {assessment.missingInputs.length > 0 ? <div className="missing-note"><WarningCircle size={18} /><span><strong>Limited data</strong><br />Missing: {assessment.missingInputs.join(", ")}</span></div> : null}
     {group.officialMatch ? <div className="official-match"><p className="eyebrow">Official context</p><strong>{group.officialMatch.incident.name}</strong><span>{group.officialMatch.method} match, {group.officialMatch.distanceKm.toFixed(1)} km away</span><span>Updated {formatUtc(group.officialMatch.incident.updatedAt)} · {group.officialMatch.incident.percentContained === null ? "containment not reported" : `${group.officialMatch.incident.percentContained}% contained`}</span></div> : null}
     <section className="contribution-section"><p className="eyebrow">Context score contributions</p>{assessment.contributions.length ? assessment.contributions.map((contribution) => <div className={`reason-row ${contribution.available ? "" : "unavailable"}`} key={contribution.code}><span><strong>{contribution.label}</strong><small>{Math.round(contribution.weight * 100)}% weight · quality {Math.round(contribution.quality * 100)}%</small></span><b>{contribution.available ? `+${Math.round(contribution.weightedValue * 100)}` : "Unavailable"}</b></div>) : <p className="quiet">No contribution details are available.</p>}</section>
-    <section className="source-freshness"><p className="eyebrow">Source freshness</p>{Object.values(snapshot.sources).map((source) => <div key={source.source} className={`source-row source-${source.status}`}><span><strong>{source.source}</strong><small>{source.mode} · {title(source.status)}{source.replayState ? ` · replay ${title(source.replayState)}` : ""}</small></span><small>fetched {formatUtc(source.fetchedAt)}<br />observed {formatUtc(source.observedAt)}{source.error ? <><br />{source.error.code}: {source.error.message}</> : null}</small></div>)}</section>
+    <SourceFreshness snapshot={snapshot} />
     <section className="alert-feed" aria-label="In-console alerts"><p className="eyebrow">In-console alerts</p>{alerts.length ? alerts.map((alert) => <article className="alert-row" key={alert.dedupeKey}><div><strong>{alert.title}</strong><p>{alert.reason}</p></div><small>{formatUtc(alert.acquiredAt)} · {alert.distanceKm.toFixed(1)} km · {alert.confidence}<br />{alert.source}</small></article>) : <p className="quiet">No new eligible activity alerts for this asset and evidence mode.</p>}</section>
   </aside>;
 }

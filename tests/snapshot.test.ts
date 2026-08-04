@@ -379,6 +379,53 @@ describe("snapshot composition", () => {
     expect(snapshot.limits?.exactRadiusApplied).toBe(true);
   });
 
+  it("fetches asset weather when FIRMS returns no detection groups", async () => {
+    const fetchWeather = vi.fn(async () => weatherPayload);
+
+    const snapshot = await buildSnapshot(
+      { asset: DEMO_ASSET, bbox: DEMO_BBOX, mode: "live" },
+      {
+        now: () => now,
+        config: {
+          firms: { mapKey: "configured" },
+          airnow: { apiKey: "" },
+          ollama: { baseUrl: "http://127.0.0.1:11434", model: "gemma4:12b" },
+        },
+        fetchFirms: async () => ({
+          ...firmsPayload,
+          detections: [],
+          observedAt: null,
+        }),
+        fetchWeather,
+        fetchAir: async () => ({
+          mode: "live",
+          status: "missing-key",
+          source: "AirNow",
+          fetchedAt: now.toISOString(),
+          observedAt: null,
+          observations: [],
+          air: null,
+        }),
+        fetchWfigs: async () => wfigsPayload,
+      },
+    );
+
+    expect(fetchWeather).toHaveBeenCalledOnce();
+    expect(fetchWeather).toHaveBeenCalledWith(
+      { location: DEMO_ASSET.location, at: now },
+      expect.objectContaining({ refresh: undefined }),
+    );
+    expect(snapshot.assetWeather).toMatchObject({
+      windSpeedMps: 6,
+      windFromDeg: 245,
+      relativeHumidityPct: 18,
+    });
+    expect(snapshot.sources.nws).toMatchObject({
+      status: "ok",
+      coverage: { succeeded: 1, failed: 0, total: 1 },
+    });
+  });
+
   it("bounds NWS work to four concurrent cluster lookups", async () => {
     let active = 0;
     let maximumActive = 0;
@@ -556,7 +603,7 @@ describe("snapshot composition", () => {
       },
     );
 
-    expect(seen).toHaveLength(4);
+    expect(seen).toHaveLength(5);
     expect(seen.every(({ refresh, signal }) => refresh && signal === controller.signal))
       .toBe(true);
   });
@@ -596,7 +643,7 @@ describe("snapshot composition", () => {
           source: "NWS",
           sourceUrl: "https://api.weather.gov/gridpoints/LKN/1,2",
           sourceUrls: ["https://api.weather.gov/gridpoints/LKN/1,2"],
-          coverage: { succeeded: 1, failed: 0, total: 1 },
+          coverage: { succeeded: 2, failed: 0, total: 2 },
         },
         airnow: {
           status: "error",
@@ -709,7 +756,8 @@ describe("snapshot composition", () => {
     const fetchWeather = vi
       .fn()
       .mockResolvedValueOnce(weatherPayload)
-      .mockRejectedValueOnce(new Error("one NWS grid unavailable"));
+      .mockRejectedValueOnce(new Error("one NWS grid unavailable"))
+      .mockResolvedValueOnce(weatherPayload);
 
     const snapshot = await buildSnapshot(
       { asset: DEMO_ASSET, bbox: DEMO_BBOX, mode: "live" },
@@ -740,7 +788,7 @@ describe("snapshot composition", () => {
     expect(snapshot.sources.nws).toMatchObject({
       status: "partial",
       source: "NWS",
-      coverage: { succeeded: 1, failed: 1, total: 2 },
+      coverage: { succeeded: 2, failed: 1, total: 3 },
     });
   });
 

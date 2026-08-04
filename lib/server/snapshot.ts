@@ -79,6 +79,7 @@ export interface Snapshot {
   generatedAt: string;
   asset: Asset;
   bbox: BoundingBox;
+  assetWeather: WeatherContext | null;
   detections: Detection[];
   groups: SnapshotGroup[];
   incidents: WfigsIncident[];
@@ -440,6 +441,7 @@ function fixtureSnapshot(input: BuildSnapshotInput, wallClock: Date): Snapshot {
     generatedAt: now.toISOString(),
     asset: input.asset,
     bbox,
+    assetWeather: fixture.nws.data.weather,
     detections,
     groups,
     incidents: fixture.wfigs.data.incidents,
@@ -477,6 +479,7 @@ export async function buildSnapshot(
   const bbox = input.bbox ?? boundingBox(input.asset.location, input.asset.radiusKm);
   const config = dependencies.config ?? getRuntimeConfig(dependencies.environment);
   const fetchFirms = dependencies.fetchFirms ?? fetchFirmsDetections;
+  const fetchWeather = dependencies.fetchWeather ?? fetchWeatherContext;
   const fetchAir = dependencies.fetchAir ?? fetchAirQuality;
   const fetchOfficial = dependencies.fetchWfigs ?? fetchWfigs;
   const cache = dependencies.cache ?? sourceCache;
@@ -486,19 +489,27 @@ export async function buildSnapshot(
     signal: dependencies.signal,
     refresh: dependencies.refresh,
   };
-  const [firmsResult, airResult, wfigsResult] = await Promise.allSettled([
+  const [firmsResult, airResult, wfigsResult, assetWeatherResult] = await Promise.allSettled([
     fetchFirms({ mapKey: config.firms.mapKey, bbox }, adapterDependencies),
     fetchAir(
       { apiKey: config.airnow.apiKey, location: input.asset.location },
       adapterDependencies,
     ),
     fetchOfficial({ bbox }, adapterDependencies),
+    fetchWeather(
+      { location: input.asset.location, at: now },
+      adapterDependencies,
+    ),
   ]);
   dependencies.signal?.throwIfAborted();
 
   const firms = firmsResult.status === "fulfilled" ? firmsResult.value : null;
   const airPayload = airResult.status === "fulfilled" ? airResult.value : null;
   const wfigs = wfigsResult.status === "fulfilled" ? wfigsResult.value : null;
+  const assetWeatherPayload = assetWeatherResult.status === "fulfilled"
+    ? assetWeatherResult.value
+    : null;
+  const assetWeather = assetWeatherPayload?.weather ?? null;
   const radiusDetections = (firms?.detections ?? []).filter(
     (detection) =>
       distanceKm(input.asset.location, detection) <= input.asset.radiusKm,
@@ -532,7 +543,6 @@ export async function buildSnapshot(
   const sourcePagesComplete =
     firms?.status !== "partial" && wfigs?.status !== "partial";
 
-  const fetchWeather = dependencies.fetchWeather ?? fetchWeatherContext;
   const weatherResults = await settleWithConcurrency(
     clusters,
     SNAPSHOT_LIMITS.weatherConcurrency,
@@ -544,13 +554,17 @@ export async function buildSnapshot(
     dependencies.signal,
   );
   dependencies.signal?.throwIfAborted();
-  const weatherSuccesses = weatherResults.flatMap((result) =>
+  const allWeatherResults: PromiseSettledResult<WeatherPayload>[] = [
+    assetWeatherResult,
+    ...weatherResults,
+  ];
+  const weatherSuccesses = allWeatherResults.flatMap((result) =>
     result.status === "fulfilled" ? [result.value] : [],
   );
   const alertsAutomated =
     truncated.length === 0 &&
     sourcePagesComplete &&
-    weatherSuccesses.length === weatherResults.length;
+    weatherSuccesses.length === allWeatherResults.length;
   const groups = clusters.map((cluster, index) => {
     const result = weatherResults[index];
     const weather = result?.status === "fulfilled" ? result.value.weather : null;
@@ -564,8 +578,8 @@ export async function buildSnapshot(
   });
   const weatherCoverage: SnapshotSourceCoverage = {
     succeeded: weatherSuccesses.length,
-    failed: weatherResults.length - weatherSuccesses.length,
-    total: weatherResults.length,
+    failed: allWeatherResults.length - weatherSuccesses.length,
+    total: allWeatherResults.length,
   };
   const weatherSourceUrls = [
     ...new Set(
@@ -577,22 +591,11 @@ export async function buildSnapshot(
   ];
   const generatedAt = now.toISOString();
   const nwsState: SnapshotSourceState =
-    clusters.length === 0
-      ? {
-          mode: "live",
-          status: "not-requested",
-          source: "NWS",
-          sourceUrl: null,
-          sourceUrls: [],
-          coverage: weatherCoverage,
-          fetchedAt: generatedAt,
-          observedAt: null,
-        }
-      : weatherSuccesses.length > 0
+    weatherSuccesses.length > 0
         ? {
             mode: "live",
             status:
-              weatherSuccesses.length === weatherResults.length
+              weatherSuccesses.length === allWeatherResults.length
                 ? "ok"
                 : "partial",
             source: "NWS",
@@ -619,6 +622,7 @@ export async function buildSnapshot(
     generatedAt,
     asset: input.asset,
     bbox,
+    assetWeather,
     detections,
     groups,
     incidents,

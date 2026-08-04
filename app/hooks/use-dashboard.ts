@@ -33,6 +33,14 @@ export type DashboardDetection = {
   frpMw: number | null;
 };
 
+export type DashboardWeather = {
+  windSpeedMps: number | null;
+  windFromDeg: number | null;
+  relativeHumidityPct: number | null;
+  quality?: string;
+  observedAt?: string;
+};
+
 export type PersistedDashboardAlert = Alert & {
   acquiredAt: string;
   distanceKm: number;
@@ -44,6 +52,7 @@ export type DashboardSnapshot = {
   mode: DataMode;
   generatedAt: string;
   asset: { id: string; name: string; location: { lat: number; lon: number }; radiusKm: number };
+  assetWeather?: DashboardWeather | null;
   detections: DashboardDetection[];
   groups: Array<{
     cluster: {
@@ -58,13 +67,7 @@ export type DashboardSnapshot = {
       maxConfidence?: string;
       maxFrpMw: number | null;
     };
-    weather: {
-      windSpeedMps: number | null;
-      windFromDeg: number | null;
-      relativeHumidityPct: number | null;
-      quality?: string;
-      observedAt?: string;
-    } | null;
+    weather: DashboardWeather | null;
     assessment: {
       score: number | null;
       scoreRange: { low: number; high: number } | null;
