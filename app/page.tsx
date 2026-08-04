@@ -71,12 +71,16 @@ export function Dashboard({ initialSnapshot }: { initialSnapshot?: DashboardSnap
   return <main className="console-shell">
     <TopBar mode={dashboard.mode} snapshotMode={snapshot?.mode} snapshot={snapshot} fixtureAvailable={dashboard.fixtureAvailable} health={dashboard.health} healthError={dashboard.healthError} lastRefreshAt={dashboard.lastRefreshAt} loading={dashboard.loading} onModeChange={dashboard.changeMode} onRefresh={() => void dashboard.refresh()} />
     {dashboard.error ? <div className="console-error" role="alert"><strong>{errorHeading}</strong> {dashboard.error.message} {dashboard.error.retryAfterSeconds ? `Retry after ${dashboard.error.retryAfterSeconds} second${dashboard.error.retryAfterSeconds === 1 ? "" : "s"}. ` : ""}{dashboard.error.retainedMode ? `Showing the previous ${dashboard.error.retainedMode} snapshot${dashboard.error.retainedAssetName ? ` for ${dashboard.error.retainedAssetName}` : ""}.` : "No prior snapshot is being shown."}</div> : null}
+    {/* Gemma sits in the workspace, not below it. Measured before the change:
+        the agent panel began at 931px in a 950px viewport, so the product's
+        headline feature was off-screen on load and the detail inspector — which
+        a user consults second, not first — held the prime column. */}
     <div className="workspace">
       {assetRail}
       <div className="map-column"><MapCanvas snapshot={replaySnapshot} selectedGroupId={dashboard.selectedGroupId} onSelect={dashboard.setSelectedGroupId} />{activeTab === "Timeline" ? null : timeline}</div>
-      {inspector}
+      {agent}
     </div>
-    <div className="agent-dock">{agent}</div>
+    <div className="inspector-dock">{inspector}</div>
     <div className="mobile-tabs" role="tablist" aria-label="Console sections">{tabs.map((tab, index) => <button ref={(element) => { tabRefs.current[index] = element; }} key={tab} role="tab" aria-selected={activeTab === tab} aria-controls={`panel-${tab.toLowerCase()}`} id={`tab-${tab.toLowerCase()}`} tabIndex={activeTab === tab ? 0 : -1} onKeyDown={(event) => handleTabKeyDown(event, index)} onClick={() => activateTab(index)}>{tab}</button>)}</div>
     {tabs.map((tab) => <div className="mobile-panel" role="tabpanel" key={tab} hidden={activeTab !== tab} aria-label={tab} id={`panel-${tab.toLowerCase()}`} aria-labelledby={`tab-${tab.toLowerCase()}`}>
       {activeTab === tab && tab === "Assets" ? assetRail : null}

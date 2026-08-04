@@ -28,17 +28,27 @@ export interface VirtualAsset {
   createFixture: (now: Date) => DemoFixture;
 }
 
+/**
+ * Order matters: the first entry is what the console selects on load.
+ *
+ * The Antelope Creek fixture is crosswind, so it opens on a basemap with a
+ * radius ring and a dot — no corridor, no isochrones, no arrival. Nothing on
+ * that first screen shows what the product does. The Camp Fire replay is the
+ * validated case: smoke inbound, the corridor drawn, arrival in 4.2 hours, and
+ * a measured comparison against the EPA monitor at the same coordinates.
+ * A first screen should be the strongest true thing the product can show.
+ */
 export const VIRTUAL_ASSETS: readonly VirtualAsset[] = [
-  {
-    asset: DEMO_ASSET,
-    bbox: DEMO_BBOX,
-    createFixture: (now) => createDemoFixture(now),
-  },
   {
     asset: CAMP_FIRE_ASSET,
     bbox: CAMP_FIRE_BBOX,
     referenceInstant: CAMP_FIRE_REFERENCE_INSTANT,
     createFixture: () => createCampFireFixture(),
+  },
+  {
+    asset: DEMO_ASSET,
+    bbox: DEMO_BBOX,
+    createFixture: (now) => createDemoFixture(now),
   },
 ];
 
