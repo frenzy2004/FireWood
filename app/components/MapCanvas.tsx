@@ -186,13 +186,12 @@ export function MapCanvas({
   }, [canUseMap, snapshot, transitionDuration]);
 
   useEffect(() => {
-    focusMapMode("asset");
-  }, [focusMapMode]);
-
-  useEffect(() => {
     if (!focusRequest || focusRequest.id === handledFocusRequest.current) return;
     handledFocusRequest.current = focusRequest.id;
-    focusMapMode(focusRequest.mode, focusRequest.groupId);
+    const frame = window.requestAnimationFrame(() => {
+      focusMapMode(focusRequest.mode, focusRequest.groupId);
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [focusMapMode, focusRequest]);
 
   const focusMapSelection = useCallback((nextSelection: Exclude<MapSelection, null>) => {
@@ -270,6 +269,12 @@ export function MapCanvas({
     }),
   };
   const detectionLabel = `${snapshot.detections.length} raw detection${snapshot.detections.length === 1 ? "" : "s"}`;
+  const newestDetectionId = snapshot.detections.reduce<{ id: string; acquiredMs: number } | null>((latest, detection, index) => {
+    const acquiredMs = Date.parse(detection.acquiredAt);
+    if (!Number.isFinite(acquiredMs)) return latest;
+    if (latest && latest.acquiredMs > acquiredMs) return latest;
+    return { id: detectionSelectionId(detection, index), acquiredMs };
+  }, null)?.id;
 
   // Derived, never stored on the snapshot — so replay filtering cannot leak a
   // stale arrival, and the estimate is anchored to when the evidence was taken.
@@ -351,7 +356,7 @@ export function MapCanvas({
             return (
               <Marker key={id} longitude={detection.lon} latitude={detection.lat}>
                 <button
-                  className={`thermal-dot ${selection?.kind === "detection" && selection.id === id ? "selected" : ""}`}
+                  className={`thermal-dot ${id === newestDetectionId ? "newest" : ""} ${selection?.kind === "detection" && selection.id === id ? "selected" : ""}`}
                   type="button"
                   aria-label={`Select ${detection.satellite} heat anomaly acquired ${formatUtc(detection.acquiredAt)}`}
                   aria-pressed={selection?.kind === "detection" && selection.id === id}
@@ -417,7 +422,7 @@ export function MapCanvas({
             return (
               <button
                 key={id}
-                className={`thermal-dot fallback-thermal ${selection?.kind === "detection" && selection.id === id ? "selected" : ""}`}
+                className={`thermal-dot fallback-thermal ${id === newestDetectionId ? "newest" : ""} ${selection?.kind === "detection" && selection.id === id ? "selected" : ""}`}
                 type="button"
                 style={{ top: `${28 + row * 14}%`, left: `${34 + column * 9}%` }}
                 aria-label={`Select ${detection.satellite} heat anomaly acquired ${formatUtc(detection.acquiredAt)}`}

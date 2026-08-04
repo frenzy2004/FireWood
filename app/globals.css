@@ -54,9 +54,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 /* Triage chips follow .arrival-block's rule: only the actionable status is amber. Four amber chips in a five-item rail would rank nothing, so likely-present goes neutral-bright and the remaining three stay muted, separated by border treatment rather than colour. .asset-copy small already sets colour and size at equal weight, so the badge defaults are scoped under .asset-copy to outrank it and every modifier restates its own colour. */ .triage-badge { display: inline-flex; align-items: center; gap: 3px; justify-self: start; max-width: 100%; margin: 1px 0 2px; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-deep); overflow-wrap: anywhere; }.asset-copy .triage-badge { color: var(--muted); font-size: 10px; line-height: 1.5; }.triage-badge svg { flex: none; }.triage-badge.triage-smoke-inbound { border-color: #e7ad4d5c; background: #e7ad4d1a; color: var(--amber); }.triage-badge.triage-smoke-likely-present { border-color: #ecf1eb29; background: #ecf1eb0f; color: var(--foreground); }.triage-badge.triage-activity-nearby, .triage-badge.triage-not-assessable, .triage-badge.triage-clear { color: var(--muted); }.triage-badge.triage-not-assessable { border-style: dashed; }.triage-badge.triage-clear { border-color: #8fbd6b30; background: #8fbd6b0f; }.triage-block { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 13px; display: grid; gap: 8px; }.triage-block .quiet { overflow-wrap: anywhere; }.triage-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 10px; }.triage-button { flex: none; display: inline-flex; align-items: center; gap: 5px; min-height: 44px; padding: 0 11px; border: 1px solid var(--line); border-radius: 8px; background: #202a22; color: #d8e7d6; font-size: 12px; white-space: nowrap; }.triage-button:hover:not(:disabled) { border-color: var(--green); }.triage-button:focus-visible { outline: 3px solid var(--green); outline-offset: 2px; }.triage-button:disabled { border-color: var(--line); background: var(--panel-deep); color: #c8d7c4; }.triage-summary { margin: 0; color: #dcebd8; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 /* Operational map controls stay compact so evidence remains the visual focus. */
 .map-toolbar { position: absolute; z-index: 4; top: 12px; left: 12px; display: flex; align-items: stretch; gap: 6px; max-width: calc(100% - 64px); }
-.map-reset-button, .map-layer-toggle, .map-evidence-close { border: 1px solid #506055; background: #101512ed; color: #dce8dc; }
+.map-reset-button, .map-focus-button, .map-layer-toggle, .map-evidence-close { border: 1px solid #506055; background: #101512ed; color: #dce8dc; }
 .map-reset-button { flex: none; width: 38px; height: 38px; display: grid; place-items: center; border-radius: 7px; }
-.map-reset-button:hover, .map-layer-toggle:hover, .map-evidence-close:hover { border-color: var(--green); color: #f7fff4; }
+.map-reset-button:hover, .map-focus-button:hover, .map-layer-toggle:hover, .map-evidence-close:hover { border-color: var(--green); color: #f7fff4; }
+.map-focus-controls { display: flex; align-items: center; gap: 3px; padding: 3px; border: 1px solid #506055; border-radius: 8px; background: #101512ed; box-shadow: 0 7px 20px #0710084d; }
+.map-focus-button { min-height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; padding: 0 8px; border-color: transparent; border-radius: 5px; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.map-focus-button[aria-pressed="true"] { border-color: #6d8b67; background: #2b402d; color: #f0f7ed; }
+.map-focus-button:focus-visible, .map-layer-toggle:focus-visible, .map-evidence-focus:focus-visible { outline: 3px solid var(--green); outline-offset: 2px; }
 .map-layer-controls { display: flex; align-items: center; gap: 3px; padding: 3px; border: 1px solid #506055; border-radius: 8px; background: #101512ed; box-shadow: 0 7px 20px #0710084d; }
 .map-layer-toggle { min-height: 30px; display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; border-color: transparent; border-radius: 5px; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .map-layer-toggle[aria-pressed="true"] { border-color: #6d8b67; background: #2b402d; color: #e5f2df; }
@@ -68,6 +72,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .map-legend span:last-child svg { color: var(--green); }
 .map-area { top: 93px; }
 .fallback-thermal { position: absolute; z-index: 2; }
+.thermal-dot.newest::before { content: ""; position: absolute; z-index: 0; inset: 8px; border: 1px solid #f0c56e; border-radius: 50%; animation: evidence-arrival 900ms ease-out 1; }
 .thermal-dot.selected::after { outline: 3px solid var(--green); outline-offset: 3px; }
 .incident-button { width: 44px; height: 44px; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; }
 .incident-button::after { content: ""; position: absolute; width: 15px; height: 15px; border-radius: 50%; background: #e7ad4d24; box-shadow: 0 0 0 8px #e7ad4d1c; }
@@ -91,20 +96,26 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .map-evidence-source span { color: #708076; }
 .map-evidence-summary { padding-top: 8px; border-top: 1px solid #344038; color: #d7e1d6; }
 .map-evidence-coordinates { font: 9px var(--font-geist-mono), monospace; }
+.map-evidence-focus { width: 100%; min-height: 36px; margin-top: 10px; border: 1px solid #6d8b67; border-radius: 7px; background: #26382a; color: #eef7ea; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-weight: 700; }
+.map-evidence-focus:hover { border-color: var(--green); background: #304835; }
 
 .agent-progress-copy { display: grid; gap: 2px; }
 .agent-progress-copy strong { color: var(--foreground); font-size: 12px; }
 .agent-progress-copy small { color: var(--muted); font-size: 11px; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes evidence-arrival { from { opacity: .85; transform: scale(.45); } to { opacity: 0; transform: scale(1.6); } }
 @media (max-width: 1100px) { .workspace { grid-template-columns: 210px minmax(340px, 1fr); }.inspector-dock { display: block; }.agent-dock { display: none; }.mobile-tabs { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }.mobile-tabs button { min-height: 44px; border: 0; border-right: 1px solid var(--line); background: #171e19; color: var(--muted); font-size: 12px; }.mobile-tabs button:last-child { border-right: 0; }.mobile-tabs button[aria-selected="true"] { color: #102010; background: var(--green); font-weight: 700; }.mobile-panel { display: block; margin-top: 8px; }.mobile-panel .panel { min-height: auto; }.triage-head { gap: 6px 8px; }.triage-button { padding: 0 9px; } }
 @media (max-width: 767px) { .console-shell { padding: 8px; }.topbar { align-items: flex-start; flex-wrap: wrap; }.brand small, .safety-status, .refresh-button span { display: none; }.topbar-actions { gap: 5px; width: 100%; justify-content: flex-start; }.connection-health { width: 100%; order: 3; flex-wrap: wrap; }.refresh-time { order: 4; }.control-button { width: 44px; padding: 0; justify-content: center; }.mode-switch button { padding: 0 7px; }.workspace { display: block; margin-top: 8px; max-height: none; }.workspace > .asset-rail, .workspace > .agent-panel, .inspector-dock, .map-column .timeline { display: none; }.map-column { display: block; }.map-canvas { min-height: 370px; }.map-hud { bottom: 48px; }.mobile-panel .panel { min-height: auto; }.safety-footer { display: block; }.safety-footer strong { display: block; margin-bottom: 4px; }.asset-rail { max-height: none; }.inspector { max-height: none; }.timeline { min-height: 190px; }.timeline-header { align-items: flex-start; }.starter-row { display: grid; grid-template-columns: 1fr; }.starter-row button { text-align: left; }.form-grid { grid-template-columns: 1fr; }.map-caption.arrival-caption { bottom: 38px; }.map-canvas:has(.arrival-caption) .map-hud { bottom: 70px; }.triage-head { gap: 8px 12px; }.triage-button { padding: 0 12px; } }
 @media (max-width: 767px) {
-  .map-toolbar { max-width: calc(100% - 54px); }
+  .map-toolbar { max-width: calc(100% - 54px); flex-wrap: wrap; }
+  .map-focus-button { width: 44px; min-height: 44px; padding: 0; }
+  .map-focus-button span { display: none; }
   .map-layer-controls { overflow-x: auto; }
   .map-layer-toggle span { display: none; }
-  .map-layer-toggle { width: 32px; padding: 0; justify-content: center; }
-  .map-legend { max-width: calc(100% - 24px); overflow-x: auto; }
-  .map-evidence-card { top: 92px; }
+  .map-layer-toggle { width: 44px; min-height: 44px; padding: 0; justify-content: center; }
+  .map-legend { top: 112px; max-width: calc(100% - 24px); overflow-x: auto; }
+  .map-area { top: 148px; }
+  .map-evidence-card { top: 148px; }
 }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }.thermal-dot.newest::before { animation: none; opacity: 0; } }

@@ -50,6 +50,7 @@ export function Dashboard({ initialSnapshot }: { initialSnapshot?: DashboardSnap
     return dashboard.alerts.filter((alert) => Date.parse(alert.acquiredAt) <= cutoffMs);
   }, [dashboard.alerts, replay.cutoff]);
   const limited = snapshot?.groups.some((group) => group.assessment.dataQuality === "limited" || group.assessment.completeness !== "complete");
+  const selectGroup = dashboard.setSelectedGroupId;
   const updateReplay = useCallback((state: ReplayState) => {
     setReplaySession({ snapshotIdentity, state });
   }, [snapshotIdentity]);
@@ -58,13 +59,13 @@ export function Dashboard({ initialSnapshot }: { initialSnapshot?: DashboardSnap
       snapshotIdentity,
       state: { cutoff: event.acquiredAt, sources: replay.sources },
     });
-    dashboard.setSelectedGroupId(event.groupId);
+    selectGroup(event.groupId);
     setMapFocusRequest((current) => ({
       id: (current?.id ?? 0) + 1,
       mode: "threat",
       groupId: event.groupId,
     }));
-  }, [dashboard.setSelectedGroupId, replay.sources, snapshotIdentity]);
+  }, [replay.sources, selectGroup, snapshotIdentity]);
   const activateTab = (index: number, focus = false) => {
     const normalized = (index + tabs.length) % tabs.length;
     setActiveTab(tabs[normalized]);

@@ -191,6 +191,7 @@ describe("EmberField smoke arrival", () => {
     expect(screen.getByRole("button", { name: "Toggle official perimeters" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Toggle smoke transport" })).toBeTruthy();
     expect(screen.getByLabelText(/Map legend.*2 FIRMS detections.*1 official incident/i)).toBeTruthy();
+    expect(document.querySelectorAll(".thermal-dot.newest")).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Select official incident CHUTE" }));
     const evidence = screen.getByRole("region", { name: "Selected map evidence" });
@@ -201,6 +202,14 @@ describe("EmberField smoke arrival", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Toggle official incidents" }));
     expect(screen.queryByRole("button", { name: "Select official incident CHUTE" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle FIRMS detections" }));
+    expect(screen.queryByRole("button", { name: /Select NOAA-20 heat anomaly/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Focus asset" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Fit all evidence" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Focus active threat" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Toggle FIRMS detections" }));
+    expect(screen.getByRole("button", { name: /Select NOAA-20 heat anomaly/ })).toBeTruthy();
   });
 
   it("accepts a replay focus request without requiring WebGL", async () => {
