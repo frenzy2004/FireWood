@@ -1,9 +1,10 @@
 /** @vitest-environment jsdom */
 
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type DashboardSnapshot } from "../app/hooks/use-dashboard";
+import { MapCanvas } from "../app/components/MapCanvas";
 import { Dashboard } from "../app/page";
 
 // Every fixture below shares one geometry: the detection cluster sits about
@@ -160,6 +161,38 @@ const confidenceCases: Array<[string, DashboardSnapshot, string]> = [
 ];
 
 describe("EmberField smoke arrival", () => {
+  it("makes independent map layers and official incidents directly usable", async () => {
+    const mapSnapshot: DashboardSnapshot = {
+      ...inboundSnapshot,
+      incidents: [{
+        id: "incident-1",
+        name: "CHUTE",
+        type: "WF",
+        location: { lat: 41.08, lon: -116.2 },
+        acres: 162,
+        percentContained: 95,
+        updatedAt: "2026-08-03T11:15:00.000Z",
+      }],
+    };
+
+    render(<MapCanvas snapshot={mapSnapshot} selectedGroupId="cluster-1" onSelect={vi.fn()} />);
+
+    expect(await screen.findByRole("button", { name: "Reset map view" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Toggle FIRMS detections" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Toggle official incidents" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Toggle official perimeters" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Toggle smoke transport" })).toBeTruthy();
+    expect(screen.getByLabelText(/Map legend.*2 FIRMS detections.*1 official incident/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Select official incident CHUTE" }));
+    const evidence = screen.getByRole("region", { name: "Selected map evidence" });
+    expect(within(evidence).getByRole("heading", { name: "CHUTE" })).toBeTruthy();
+    expect(evidence.textContent).toMatch(/WFIGS.*162 acres.*95% contained.*2026-08-03T11:15:00Z/i);
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle official incidents" }));
+    expect(screen.queryByRole("button", { name: "Select official incident CHUTE" })).toBeNull();
+  });
+
   it("states the arrival hours, the estimated arrival line, and a map chip when smoke is inbound", async () => {
     render(<Dashboard initialSnapshot={inboundSnapshot} />);
 

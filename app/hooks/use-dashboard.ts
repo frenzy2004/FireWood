@@ -41,6 +41,17 @@ export type DashboardWeather = {
   observedAt?: string;
 };
 
+export type DashboardIncident = {
+  id: string;
+  name: string;
+  type?: string;
+  location: { lat: number; lon: number };
+  acres?: number | null;
+  percentContained?: number | null;
+  discoveredAt?: string | null;
+  updatedAt?: string | null;
+};
+
 export type PersistedDashboardAlert = Alert & {
   acquiredAt: string;
   distanceKm: number;
@@ -99,7 +110,7 @@ export type DashboardSnapshot = {
       distanceKm: number;
     } | null;
   }>;
-  incidents: Array<{ id: string; name: string; location: { lat: number; lon: number } }>;
+  incidents: DashboardIncident[];
   perimeters: Array<{ id: string; geometry: unknown }>;
   air: {
     aqi: number | null;
