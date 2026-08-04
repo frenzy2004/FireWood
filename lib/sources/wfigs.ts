@@ -270,7 +270,7 @@ export async function fetchWfigs(
   const envelope = [input.bbox.west, input.bbox.south, input.bbox.east, input.bbox.north].join(",");
   const load = async (): Promise<WfigsPayload> => {
     const fetchImplementation = dependencies.fetchImplementation ?? fetch;
-    const [points, perimeters] = await Promise.all([
+    const [pointsResult, perimetersResult] = await Promise.allSettled([
       fetchLayer(
         POINT_ENDPOINT,
         WFIGS_POINT_FIELDS,
@@ -288,13 +288,29 @@ export async function fetchWfigs(
         dependencies.signal,
       ),
     ]);
+    dependencies.signal?.throwIfAborted();
+    if (pointsResult.status === "rejected" && perimetersResult.status === "rejected") {
+      throw pointsResult.reason;
+    }
+    const points = pointsResult.status === "fulfilled"
+      ? pointsResult.value
+      : { incidents: [], perimeters: [], truncated: false };
+    const perimeters = perimetersResult.status === "fulfilled"
+      ? perimetersResult.value
+      : { incidents: [], perimeters: [], truncated: false };
     const observedTimes = [
       ...points.incidents.flatMap(({ updatedAt }) => (updatedAt ? [updatedAt] : [])),
       ...perimeters.perimeters.flatMap(({ updatedAt }) => (updatedAt ? [updatedAt] : [])),
     ].sort();
     return {
       mode: "live",
-      status: points.truncated || perimeters.truncated ? "partial" : "ok",
+      status:
+        pointsResult.status === "rejected"
+        || perimetersResult.status === "rejected"
+        || points.truncated
+        || perimeters.truncated
+          ? "partial"
+          : "ok",
       source: "WFIGS",
       fetchedAt: utcNow(dependencies.now),
       observedAt: observedTimes.at(-1) ?? null,

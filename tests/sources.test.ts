@@ -642,6 +642,34 @@ describe("live source adapters", () => {
       ?.searchParams.get("resultRecordCount")).toBe("100");
   });
 
+  it("keeps valid incident points when the perimeter layer is rate limited", async () => {
+    const fetchImplementation: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.includes("Incident_Locations")) return Response.json(wfigsPoints);
+      return Response.json(
+        { error: { code: 429, message: "Too many requests" } },
+        { status: 429 },
+      );
+    };
+
+    const result = await fetchWfigs(
+      {
+        bbox: {
+          west: -117.19,
+          south: 40.6,
+          east: -115.89,
+          north: 41.5,
+          crossesAntimeridian: false,
+        },
+      },
+      { fetchImplementation },
+    );
+
+    expect(result.status).toBe("partial");
+    expect(result.incidents).toHaveLength(1);
+    expect(result.perimeters).toEqual([]);
+  });
+
   it("stops WFIGS at one bounded page per layer and reports possible truncation", async () => {
     const requested: URL[] = [];
     const fetchImplementation: typeof fetch = async (input) => {

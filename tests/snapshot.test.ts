@@ -179,6 +179,25 @@ describe("source-aware cache", () => {
     expect(loader).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps a still-valid verified entry when a forced refresh fails", async () => {
+    const cache = new MemoryTtlCache(() => 1_000);
+    const loader = vi
+      .fn<() => Promise<string>>()
+      .mockResolvedValueOnce("last verified")
+      .mockRejectedValueOnce(new Error("upstream unavailable"));
+
+    await cache.getOrLoad("wfigs:resilient-refresh", CACHE_TTLS.wfigs, loader);
+    const fallback = await cache.getOrLoad(
+      "wfigs:resilient-refresh",
+      CACHE_TTLS.wfigs,
+      loader,
+      { refresh: true },
+    );
+
+    expect(fallback).toMatchObject({ value: "last verified", cache: "hit" });
+    expect(loader).toHaveBeenCalledTimes(2);
+  });
+
   it("does not let older in-flight work overwrite a completed refresh", async () => {
     const cache = new MemoryTtlCache(() => 1_000);
     let resolveOlder!: (value: string) => void;

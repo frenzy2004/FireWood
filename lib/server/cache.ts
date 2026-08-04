@@ -121,6 +121,18 @@ export class MemoryTtlCache implements TtlCache {
           expiresAt: new Date(expiresAt).toISOString(),
         };
       })
+      .catch((error: unknown) => {
+        throwIfAborted(options.signal);
+        if (options.refresh && existing && current < existing.expiresAt) {
+          return {
+            value: existing.value,
+            cache: "hit" as const,
+            cachedAt: new Date(existing.cachedAt).toISOString(),
+            expiresAt: new Date(existing.expiresAt).toISOString(),
+          };
+        }
+        throw error;
+      })
       .finally(() => {
         if (this.pending.get(key) === work) this.pending.delete(key);
       });
