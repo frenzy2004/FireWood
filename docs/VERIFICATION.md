@@ -12,7 +12,7 @@ Snapshot persistence and historical replay status: **COMPLETE FOR THE LOCAL PROT
 
 | Command | Recorded result |
 | --- | --- |
-| `npm test` | Passed: 15 test files, 187 tests |
+| `npm test` | Passed: 20 test files, 255 tests |
 | `npm run lint` | Passed with no ESLint findings |
 | `npm run build` | Passed; Vinext produced the app and six API routes |
 | `npm run db:local` | Passed; all versioned migrations applied, and the repeat run reported no pending migrations |
@@ -67,7 +67,7 @@ The successful warm run completed in about 26.2 seconds and returned `persistenc
 
 After the final tool-set review, a second real request proved the new native `geocode_location` path. Gemma selected the tool, the live US Census Geocoder returned `status: ok`, and Gemma produced `The Census source mode is live [evidence:1].` in two rounds and about 7.0 seconds. The trace reported `geocode_location`, a server-issued evidence reference, and live Census source state; the prompt, answer, and trace were not persisted.
 
-A broader live-orchard prompt also selected `inspect_asset` and received current live evidence, but the generated synthesis failed the conservative claim-level validator. The route returned the safe grounding fallback rather than exposing unsupported prose. The deterministic panels and visible tool result remain authoritative.
+A broader live-orchard prompt also selected `inspect_asset` and received current live evidence. Synthesis initially failed the conservative claim-level validator because the model described evidence in synonyms the payload did not contain; evidence tools now emit a plain-language summary and three consecutive fixture runs returned grounded briefings. Unsupported prose is still replaced by the safe fallback, and the deterministic panels and visible tool result remain authoritative.
 
 ## 3. Sanitized live source proof
 
@@ -189,4 +189,4 @@ Then run `npm run dev` and manually verify:
 - public hosting, accounts, team sharing, and cloud synchronization;
 - reconstruction of historical NWS grids, AirNow readings, or prior risk scores in replay;
 - production security certification, emergency-service integration, and field validation;
-- any claim that EmberField predicts spread, arrival, evacuation need, or official danger.
+- any claim that EmberField predicts fire spread, evacuation need, or official danger. Smoke arrival is estimated, but only as transport from an already-detected source, capped at moderate confidence.

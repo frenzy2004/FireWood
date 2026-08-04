@@ -19,7 +19,9 @@ import {
 export const GEMMA_MODEL = "gemma4:12b";
 export const AGENT_TIMEOUT_MS = 45_000;
 export const AGENT_MAX_ROUNDS = 6;
-export const AGENT_MAX_CALLS_PER_ROUND = 10;
+// Sized to the allowlist so the model can exercise every evidence tool in a
+// single round. Raise this alongside AGENT_TOOL_NAMES.
+export const AGENT_MAX_CALLS_PER_ROUND = 11;
 export const AGENT_MAX_TOOL_CALLS = 18;
 export const AGENT_MAX_REFRESH_CALLS = 1;
 
@@ -32,7 +34,8 @@ export const agentRequestSchema = z
   .strict();
 
 export const AGENT_SYSTEM_PROMPT = `You are EmberField's local agricultural evidence assistant.
-Use only values returned by the provided tools. Every condition or source assertion in a final briefing must cite a successful tool's server-issued evidenceRef exactly as [evidence:REF]. Never cite a failed call. Call satellite heat anomalies "detections", never confirmed fires unless an official incident tool confirms one. Name missing, stale, partial, missing-key, error, live, and fixture source states explicitly. Do not invent observations, alter deterministic scores, predict spread, or issue evacuation, dispatch, firefighting, or protection-of-life or property instructions. You may suggest low-risk questions for farm continuity planning. Follow local emergency officials and NWS alerts. Data may be delayed, incomplete, or inaccurate.`;
+Use only values returned by the provided tools. Every condition or source assertion in a final briefing must cite a successful tool's server-issued evidenceRef exactly as [evidence:REF]. Never cite a failed call. Call satellite heat anomalies "detections", never confirmed fires unless an official incident tool confirms one. Name missing, stale, partial, missing-key, error, live, and fixture source states explicitly. Do not invent observations, alter deterministic scores, predict spread, or issue evacuation, dispatch, firefighting, or protection-of-life or property instructions. You may suggest low-risk questions for farm continuity planning. Follow local emergency officials and NWS alerts. Data may be delayed, incomplete, or inaccurate.
+When you state a number, name the quantity in the same sentence using the tool's own wording, so the claim can be checked against its evidence. Write "the distance is 103.6 km", not "103.6 km away"; write "arrives in 4.2 hours" or "transit time is 4.3 hours", not "4.2 hours out". Prefer short sentences that carry one fact each.`;
 
 export type AgentRunStatus =
   | "ok"
@@ -326,6 +329,29 @@ const FIELD_LABEL_ALIASES: Record<string, string[]> = {
   dataConfidence: ["data confidence"],
   distinctPasses24h: ["distinct passes", "passes"],
   bearingClusterToAsset: ["bearing", "bearing to asset"],
+  // Smoke-advection fields. Without these the raw camelCase label is the only
+  // way to ground a number, so natural phrasing such as "arrives in 4.2 hours"
+  // could never match its own evidence and every briefing fell back.
+  hoursUntilArrival: [
+    "hours until arrival",
+    "arrives in",
+    "arrival in",
+    "estimated arrival",
+    "arrival",
+    "lead time",
+    "hours of warning",
+    "warning",
+  ],
+  transitHours: ["transit", "transit time", "travel time", "corrected transit"],
+  rawTransitHours: ["raw transit", "uncorrected transit"],
+  transportBearingDeg: [
+    "transport bearing",
+    "transport direction",
+    "heading toward",
+    "toward",
+  ],
+  offAxisDeg: ["off axis", "off the transport bearing", "degrees off"],
+  assetBearingDeg: ["asset bearing", "bearing to asset"],
 };
 
 const SOURCE_SELECTOR_ALIASES: Record<string, string[]> = {
@@ -350,6 +376,8 @@ interface EvidenceIndex {
   terms: Set<string>;
   numbers: EvidenceNumericFact[];
   states: EvidenceStateFact[];
+  /** Ordered clock keys from evidence timestamps, e.g. "19:10:42" and "19:10". */
+  clocks: Set<string>;
 }
 
 function fieldLabels(path: string[]): string[] {
@@ -370,6 +398,81 @@ function sourceSelector(value: unknown): string | null {
     Object.entries(SOURCE_SELECTOR_ALIASES).find(([, aliases]) =>
       aliases.some((alias) => containsTokenSequence(terms, alias)),
     )?.[0] ?? null
+  );
+}
+
+const ISO_TIMESTAMP_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z?$/;
+
+/** Clock times as a briefing would write them, e.g. "19:10:42" or "19:10". */
+const CLOCK_CLAIM_PATTERN = /\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b/g;
+
+/**
+ * Calendar and clock components of an ISO timestamp.
+ *
+ * `numericClaims` cannot reach some of these: its lookbehind rejects the hour
+ * in `T19`, and a fractional second indexes as `42.523` rather than `42`. A
+ * briefing that quotes a time as "19:10:42 on November 8" was therefore
+ * ungroundable against the very timestamp it came from, for every tool that
+ * returns one.
+ *
+ * Strictly additive — only surfaces values already present in the evidence.
+ */
+function isoTimestampComponents(value: string): number[] {
+  const parsed = parseIsoTimestamp(value);
+  return parsed === null
+    ? []
+    : [parsed.year, parsed.month, parsed.day, parsed.hour, parsed.minute, parsed.second];
+}
+
+interface ParsedTimestamp {
+  year: number; month: number; day: number;
+  hour: number; minute: number; second: number;
+}
+
+/**
+ * Parse an ISO timestamp, rejecting shapes that are well-formed but impossible.
+ *
+ * Digit-width matching alone accepts `2018-02-31T25:61:61Z`. Round-tripping
+ * through Date catches both invalid clock values and dates that do not exist in
+ * the calendar, so nothing unreal ever reaches the evidence index.
+ */
+function parseIsoTimestamp(value: string): ParsedTimestamp | null {
+  const match = ISO_TIMESTAMP_PATTERN.exec(value.trim());
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second] = match.map(Number) as number[];
+  const utc = Date.UTC(year, month - 1, day, hour, minute, second);
+  if (!Number.isFinite(utc)) return null;
+  const round = new Date(utc);
+  if (
+    round.getUTCFullYear() !== year ||
+    round.getUTCMonth() !== month - 1 ||
+    round.getUTCDate() !== day ||
+    round.getUTCHours() !== hour ||
+    round.getUTCMinutes() !== minute ||
+    round.getUTCSeconds() !== second
+  ) {
+    return null;
+  }
+  return { year, month, day, hour, minute, second };
+}
+
+const clockKey = (hour: number, minute: number, second: number | null) =>
+  second === null
+    ? `${hour}:${minute}`
+    : `${hour}:${minute}:${second}`;
+
+/**
+ * Clock times a sentence asserts, as ordered keys.
+ *
+ * Components are indexed individually so that a briefing quoting "19:10:42" can
+ * ground against the timestamp it came from. That alone would also accept
+ * "19:42:10", which recombines the same three numbers into a time that never
+ * happened — so a clock claim is additionally checked as an ordered whole.
+ */
+function clockClaims(sentence: string): string[] {
+  return [...sentence.matchAll(CLOCK_CLAIM_PATTERN)].map((match) =>
+    clockKey(Number(match[1]), Number(match[2]), match[3] === undefined ? null : Number(match[3])),
   );
 }
 
@@ -416,6 +519,14 @@ function addEvidenceValue(
     for (const claim of numericClaims(value)) {
       index.numbers.push({ value: claim.value, labels: fieldLabels(path) });
     }
+    for (const component of isoTimestampComponents(value)) {
+      index.numbers.push({ value: component, labels: fieldLabels(path) });
+    }
+    const timestamp = parseIsoTimestamp(value);
+    if (timestamp) {
+      index.clocks.add(clockKey(timestamp.hour, timestamp.minute, timestamp.second));
+      index.clocks.add(clockKey(timestamp.hour, timestamp.minute, null));
+    }
     if ((field === "mode" || field === "status") && value.trim()) {
       index.states.push({
         kind: field,
@@ -448,6 +559,7 @@ function evidenceIndex(entries: AgentTraceEntry[]): EvidenceIndex {
     terms: new Set<string>(),
     numbers: [],
     states: [],
+    clocks: new Set<string>(),
   };
   for (const entry of entries) {
     addEvidenceValue(index, entry.resultSummary, []);
@@ -469,6 +581,12 @@ function hasSupportedNumericClaims(
   sentence: string,
   index: EvidenceIndex,
 ): boolean {
+  // A clock must match an evidence timestamp as an ordered whole. Checking the
+  // components independently would accept "19:42:10" against a 19:10:42
+  // timestamp — the same three numbers rearranged into a time that never was.
+  for (const clock of clockClaims(sentence)) {
+    if (!index.clocks.has(clock)) return false;
+  }
   return numericClaims(sentence).every((claim) => {
     const nearbyTerms = lexicalTokens(
       sentence.slice(

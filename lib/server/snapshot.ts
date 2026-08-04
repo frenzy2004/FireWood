@@ -11,6 +11,7 @@ import type {
   WeatherContext,
 } from "../domain/types";
 import { createDemoFixture } from "../fixtures/demo";
+import { fixtureReferenceInstant, getVirtualAsset } from "../fixtures/registry";
 import {
   fetchAirQuality,
   type AirQualityPayload,
@@ -394,8 +395,14 @@ function assessmentFor(
   });
 }
 
-function fixtureSnapshot(input: BuildSnapshotInput, now: Date): Snapshot {
-  const fixture = createDemoFixture(now);
+function fixtureSnapshot(input: BuildSnapshotInput, wallClock: Date): Snapshot {
+  const virtual = getVirtualAsset(input.asset.id);
+  // Historical replays pin their own instant so freshness, staleness and
+  // arrival maths are evaluated against the event rather than against today.
+  const now = fixtureReferenceInstant(input.asset.id, wallClock);
+  const fixture = virtual
+    ? virtual.createFixture(now)
+    : createDemoFixture(now);
   const bbox = input.bbox ?? boundingBox(input.asset.location, input.asset.radiusKm);
   const detections = fixture.firms.data.detections
     .filter(

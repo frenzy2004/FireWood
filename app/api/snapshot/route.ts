@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { getD1Database } from "@/db";
 import { boundingBox } from "@/lib/domain/geometry";
-import { DEMO_ASSET, DEMO_BBOX } from "@/lib/fixtures/demo";
+import { getVirtualAsset } from "@/lib/fixtures/registry";
 import {
   LocalWorkLimiter,
   rejectUnsafeLocalRequest,
@@ -115,7 +115,8 @@ export function createSnapshotPostHandler(
     const deadline = AbortSignal.timeout(SNAPSHOT_DEADLINE_MS);
     const signal = AbortSignal.any([request.signal, deadline]);
     try {
-      const isVirtualDemo = parsed.data.assetId === DEMO_ASSET.id;
+      const virtualAsset = getVirtualAsset(parsed.data.assetId);
+      const isVirtualDemo = virtualAsset !== null;
       if (parsed.data.mode === "fixture" && !isVirtualDemo) {
         return boundedJsonResponse(
           { error: "Fixture mode is available only for the virtual demo asset" },
@@ -129,8 +130,8 @@ export function createSnapshotPostHandler(
               (getD1Database() as unknown as D1DatabaseLike),
             { now: dependencies.now },
           );
-      const asset = isVirtualDemo
-        ? DEMO_ASSET
+      const asset = virtualAsset
+        ? virtualAsset.asset
         : await repository?.getAsset(parsed.data.assetId, signal);
       if (!asset) {
         return boundedJsonResponse({ error: "Saved asset was not found" }, { status: 404 });
@@ -139,8 +140,8 @@ export function createSnapshotPostHandler(
       const snapshot = await snapshotBuilder(
         {
           asset,
-          bbox: isVirtualDemo
-            ? DEMO_BBOX
+          bbox: virtualAsset
+            ? virtualAsset.bbox
             : boundingBox(asset.location, asset.radiusKm),
           mode: parsed.data.mode,
         },

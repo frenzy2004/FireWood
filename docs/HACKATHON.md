@@ -22,6 +22,53 @@ The app deliberately separates facts from interpretation:
 - The UI names missing inputs and source failures instead of silently assigning zero.
 - Safety language avoids confirmed-fire, spread-prediction, and evacuation claims.
 
+## The claim we can actually prove
+
+Every air-quality product is a sensor: it tells you the air is bad once it
+already is. By then the crew has been outside for hours.
+
+Smoke has a source that VIIRS detects, a direction and a speed that wind data
+gives, and therefore an arrival time. EmberField estimates it whenever those
+transport inputs are valid and the asset sits inside the plume corridor, and
+reports why it cannot otherwise — missing wind, calm wind, or off-plume. The
+estimate is checkable against an event that already happened.
+
+`npm run replay` reconstructs 8 November 2018 with no keys, no Ollama and no
+network. Thirty minutes after the Camp Fire started, the air at a farm 104 km
+downwind reads AQI 18 — clean. The console already places smoke arrival at
+19:10 UTC: **4.2 hours of warning**.
+
+The EPA monitor at those exact coordinates recorded arrival 6.5 hours after
+ignition. The estimate was 4.7 hours. **1.8 hours early** — the safe direction.
+
+Across 14 California monitors from 104 km to 262 km, using NASA POWER 50 m wind
+and EPA AirData PM2.5 as ground truth:
+
+```text
+raw advection      median +1.4h   mean |error| 2.3h
+after correction   median +0.0h   mean |error| 1.6h
+```
+
+No monitor was warned more than 2.2 hours late. Two of the fourteen are badly
+wrong, both early, both terrain channelling — and both are kept in the test
+suite. A validation fixture that drops its failures is not a validation.
+
+The console draws it as well as states it: a corridor wedge opening the validated
+50 degrees either side of the transport bearing, with hourly isochrone arcs marking
+where the leading edge should be after each hour. The arcs invert the estimator
+rather than re-deriving it, so they carry the same calibration — no arc is drawn
+before the calibration delay elapses, and the map can never place smoke somewhere
+the panel beside it says smoke cannot yet be. Arcs beyond the corridor range are
+omitted rather than clamped, so the map never implies more reach than the method
+has.
+
+**The line we do not cross.** We will not predict where a fire goes. Fire spread
+is genuinely hard and getting it wrong is dangerous. Smoke advection from an
+already-detected source is a different and far more tractable problem, and
+naming that distinction is the difference between a defensible tool and a
+liability. Confidence is capped at `moderate` permanently, and every estimate
+says in its own words that it is not a fire-spread prediction.
+
 ## Why Gemma is core, not decorative
 
 Gemma 4 12B is the primary intelligence in the operator workflow. A prompt such as "Brief me on the orchard and explain what changed" does not map to a hard-coded answer. Gemma uses native function calling to choose among allowlisted tools for farm assets, detection groups, weather, air quality, official incidents, the 24-hour timeline, and score explanations. It can gather more evidence over several rounds before synthesizing its response.
@@ -34,7 +81,7 @@ Every call is schema-validated. The trace shows the tool, safe arguments, durati
 
 - Actual local `gemma4:12b`, not a mock or hosted proxy.
 - Ollama native `message.tool_calls` with multi-round tool continuation.
-- Nine domain-specific, schema-validated functions.
+- Eleven domain-specific, schema-validated functions, including a Camp-Fire-validated smoke-arrival estimate.
 - Source-grounding system prompt and a visible, redacted execution trace.
 - Graceful offline, invalid-call, timeout, and round-limit behavior.
 
@@ -82,7 +129,7 @@ Agriculture asset
 
 ## Responsible-AI position
 
-EmberField never claims that a FIRMS anomaly is a confirmed wildfire. It never turns detection count into acres, calls activity change confirmed spread, predicts arrival, or recommends evacuation. Missing data lowers confidence. The product is an informational triage surface that helps an operator decide what official information to check next.
+EmberField never claims that a FIRMS anomaly is a confirmed wildfire. It never turns detection count into acres, calls activity change confirmed spread, predicts where a fire will go, or recommends evacuation. It does estimate when smoke from an already-detected source reaches an asset, and that estimate is labelled as transport rather than spread, capped at moderate confidence, and withheld entirely when the wind is missing, calm, or blowing elsewhere. Missing data lowers confidence. The product is an informational triage surface that helps an operator decide what official information to check next.
 
 ## What to emphasize live
 

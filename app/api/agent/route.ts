@@ -6,7 +6,8 @@ import type {
   AgentRepository,
   SnapshotService,
 } from "@/lib/agent/tools";
-import { DEMO_ASSET, DEMO_BBOX } from "@/lib/fixtures/demo";
+import type { Asset } from "@/lib/domain/types";
+import { getVirtualAsset } from "@/lib/fixtures/registry";
 import { getRuntimeConfig } from "@/lib/server/config";
 import {
   LocalWorkLimiter,
@@ -19,19 +20,19 @@ import {
 } from "@/lib/server/repository";
 import { buildSnapshot } from "@/lib/server/snapshot";
 
-const demoSavedAsset: SavedAsset = {
-  ...DEMO_ASSET,
+const asSavedAsset = (asset: Asset): SavedAsset => ({
+  ...asset,
   category: "other",
   notes: null,
   createdAt: "2026-08-03T00:00:00.000Z",
   updatedAt: "2026-08-03T00:00:00.000Z",
-};
+});
 
 const MAXIMUM_AGENT_REQUEST_BYTES = 16_384;
 
-function virtualDemoRepository(): AgentRepository {
+function virtualDemoRepository(asset: Asset): AgentRepository {
   return {
-    listAssets: async () => [demoSavedAsset],
+    listAssets: async () => [asSavedAsset(asset)],
     listAlerts: async () => [],
     saveAgentRun: async () => {
       throw new Error("Virtual demo agent runs are not persisted");
@@ -69,7 +70,8 @@ export async function POST(request: Request): Promise<Response> {
     if (!parsed.success) {
       return Response.json({ error: "Invalid agent request" }, { status: 400 });
     }
-    const isVirtualDemo = parsed.data.assetId === DEMO_ASSET.id;
+    const virtualAsset = getVirtualAsset(parsed.data.assetId);
+    const isVirtualDemo = virtualAsset !== null;
     if (parsed.data.mode === "fixture" && !isVirtualDemo) {
       return Response.json(
         { error: "Fixture mode is available only for the virtual demo asset" },
@@ -91,8 +93,8 @@ export async function POST(request: Request): Promise<Response> {
     const mode = isVirtualDemo
       ? (parsed.data.mode ?? "fixture")
       : (parsed.data.mode ?? "live");
-    const repository: AgentRepository = isVirtualDemo
-      ? virtualDemoRepository()
+    const repository: AgentRepository = virtualAsset
+      ? virtualDemoRepository(virtualAsset.asset)
       : new AssetRepository(
           getD1Database() as unknown as D1DatabaseLike,
         );
@@ -100,7 +102,7 @@ export async function POST(request: Request): Promise<Response> {
       buildSnapshot(
         {
           asset,
-          ...(isVirtualDemo ? { bbox: DEMO_BBOX } : {}),
+          ...(virtualAsset ? { bbox: virtualAsset.bbox } : {}),
           mode,
         },
         {

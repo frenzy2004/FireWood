@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { deriveAlerts } from "@/lib/domain/alerts";
 import type { Alert, AlertEvaluation, AlertType } from "@/lib/domain/types";
+import { VIRTUAL_ASSETS, isVirtualAssetId } from "@/lib/fixtures/registry";
 
 export type DataMode = "fixture" | "live";
 
@@ -250,15 +251,19 @@ export function deriveConsoleAlerts(
   return [...new Map(alerts.map((alert) => [alert.dedupeKey, alert])).values()];
 }
 
-const defaultAsset: SavedAsset = {
-  id: "demo-antelope-ranch",
-  name: "Antelope Creek Ranch",
+// Virtual assets are not stored in D1. They are always offered in the picker so
+// the console can be driven — and the Camp Fire replayed — without saving
+// anything first.
+const virtualAssets: SavedAsset[] = VIRTUAL_ASSETS.map(({ asset }) => ({
+  id: asset.id,
+  name: asset.name,
   category: "other",
-  location: { lat: 41.049033, lon: -116.543867 },
-  radiusKm: 45,
-};
+  location: asset.location,
+  radiusKm: asset.radiusKm,
+  notes: null,
+}));
 
-const DEMO_ASSET_ID = defaultAsset.id;
+const defaultAsset: SavedAsset = virtualAssets[0];
 
 class SnapshotRequestError extends Error {
   constructor(
@@ -361,7 +366,7 @@ function initialConsoleAlerts(snapshot: DashboardSnapshot | undefined): ConsoleA
 }
 
 const requestedModeForAsset = (asset: SavedAsset, mode: DataMode): DataMode =>
-  asset.id === DEMO_ASSET_ID ? mode : "live";
+  isVirtualAssetId(asset.id) ? mode : "live";
 
 const snapshotKey = (assetId: string, mode: DataMode) => `${assetId}:${mode}`;
 
@@ -415,7 +420,11 @@ export function useDashboard(initialSnapshot?: DashboardSnapshot) {
 
   const [mode, setMode] = useState<DataMode>(hydratedInitialSnapshot?.mode ?? "fixture");
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | undefined>(hydratedInitialSnapshot);
-  const [assets, setAssets] = useState<SavedAsset[]>([hydratedInitialSnapshot?.asset ?? defaultAsset]);
+  const [assets, setAssets] = useState<SavedAsset[]>(() => {
+    const hydrated = hydratedInitialSnapshot?.asset;
+    if (!hydrated) return virtualAssets;
+    return [hydrated, ...virtualAssets.filter((asset) => asset.id !== hydrated.id)];
+  });
   const [selectedAssetId, setSelectedAssetId] = useState(hydratedInitialSnapshot?.asset.id ?? defaultAsset.id);
   const [selectedGroupId, setSelectedGroupId] = useState(hydratedInitialSnapshot?.groups[0]?.cluster.id ?? "");
   const [loading, setLoading] = useState(!hydratedInitialSnapshot);
@@ -543,8 +552,13 @@ export function useDashboard(initialSnapshot?: DashboardSnapshot) {
       })
       .then((payload: { assets?: SavedAsset[] } | null) => {
         if (!payload?.assets?.length) return;
-        const first = initialSnapshot?.asset ?? defaultAsset;
-        setAssets([first, ...payload.assets.filter((asset) => asset.id !== first.id)]);
+        // Virtual assets stay pinned ahead of saved ones so the replay is
+        // always reachable, even once real assets exist.
+        const pinned = initialSnapshot?.asset
+          ? [initialSnapshot.asset, ...virtualAssets.filter(({ id }) => id !== initialSnapshot.asset.id)]
+          : virtualAssets;
+        const pinnedIds = new Set(pinned.map(({ id }) => id));
+        setAssets([...pinned, ...payload.assets.filter(({ id }) => !pinnedIds.has(id))]);
       })
       .catch((cause) => {
         if (cause instanceof DOMException && cause.name === "AbortError") return;
@@ -608,7 +622,7 @@ export function useDashboard(initialSnapshot?: DashboardSnapshot) {
     summaries,
     refresh,
     changeMode,
-    fixtureAvailable: selectedAsset.id === DEMO_ASSET_ID,
+    fixtureAvailable: isVirtualAssetId(selectedAsset.id),
   };
 }
 

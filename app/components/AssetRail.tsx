@@ -29,7 +29,10 @@ export function AssetRail({
   return <aside className="asset-rail panel" aria-label="Saved agriculture assets">
     <div className="panel-heading"><div><p className="eyebrow">Farm assets</p><h2>Monitored places</h2></div><button className="icon-button" onClick={onAdd} aria-label="Add an asset" title="Add an asset"><Plus size={18} /></button></div>
     <div className="asset-list">
-      {assets.map((asset) => <button key={asset.id} className={`asset-row ${asset.id === selectedId ? "selected" : ""}`} aria-pressed={asset.id === selectedId} onClick={() => onSelect(asset)}>
+      {/* Without an explicit name the button announces its whole body — name,
+          radius, score, trend, mode, ISO timestamp and coordinates — as one
+          run-on string. The visible detail stays; the name stays actionable. */}
+      {assets.map((asset) => <button key={asset.id} className={`asset-row ${asset.id === selectedId ? "selected" : ""}`} aria-pressed={asset.id === selectedId} aria-label={`Select ${asset.name}`} onClick={() => onSelect(asset)}>
         <span className="asset-icon"><Tractor size={17} /></span><span className="asset-copy"><strong>{asset.name}</strong><small>{asset.category ?? "saved location"} · {asset.radiusKm.toFixed(1)} km</small><small className="asset-summary">{summaryText(summaries?.[asset.id])}</small><small><MapPin size={12} /> {asset.location.lat.toFixed(3)}, {asset.location.lon.toFixed(3)}</small></span>
       </button>)}
     </div>

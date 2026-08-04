@@ -13,7 +13,8 @@
     "test:unit": "vitest run",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
-    "db:local": "wrangler d1 migrations apply site-creator-d1 --local --persist-to=.wrangler/state --config=wrangler.local.jsonc"
+    "db:local": "wrangler d1 migrations apply site-creator-d1 --local --persist-to=.wrangler/state --config=wrangler.local.jsonc",
+    "replay": "tsx scripts/replay-camp-fire.ts"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
@@ -43,6 +44,7 @@
     "jsdom": "^30.0.1",
     "react-server-dom-webpack": "19.2.6",
     "tailwindcss": "4.2.1",
+    "tsx": "^4.20.3",
     "typescript": "5.9.3",
     "vinext": "0.0.50",
     "vite": "8.0.13",

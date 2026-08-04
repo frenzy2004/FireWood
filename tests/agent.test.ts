@@ -16,6 +16,7 @@ import {
   type SnapshotService,
 } from "../lib/agent/tools";
 import {
+  AGENT_MAX_CALLS_PER_ROUND,
   isAnswerGrounded,
   runAgent,
   type AgentTraceEntry,
@@ -230,6 +231,7 @@ describe("Gemma native tool loop", () => {
       get_weather_context: { assetId: asset.id },
       get_air_quality: { assetId: asset.id },
       get_official_incidents: { assetId: asset.id },
+      get_smoke_arrival: { assetId: asset.id },
       get_timeline: { assetId: asset.id, hours: 24 },
       explain_assessment: { assetId: asset.id },
       geocode_location: { address: "1600 Pennsylvania Avenue NW, Washington, DC" },
@@ -270,7 +272,7 @@ describe("Gemma native tool loop", () => {
       messages: Array<{ role: string; content: string }>;
     };
     const toolMessages = continuation.messages.filter(({ role }) => role === "tool");
-    expect(toolMessages).toHaveLength(10);
+    expect(toolMessages).toHaveLength(11);
     expect(
       toolMessages.every(
         ({ content }) => new TextEncoder().encode(content).byteLength <= 6_000,
@@ -453,16 +455,19 @@ describe("Gemma native tool loop", () => {
     expect(ollama.requests).toHaveLength(6);
   });
 
-  it("rejects a round containing more than ten tool calls before execution", async () => {
-    const excessiveCalls = Array.from({ length: 11 }, (_, index) => ({
-      id: `call-${index}`,
-      type: "function",
-      function: {
-        index,
-        name: "list_assets",
-        arguments: {},
-      },
-    }));
+  it("rejects a round exceeding the per-round tool-call cap before execution", async () => {
+    const excessiveCalls = Array.from(
+      { length: AGENT_MAX_CALLS_PER_ROUND + 1 },
+      (_, index) => ({
+        id: `call-${index}`,
+        type: "function",
+        function: {
+          index,
+          name: "list_assets",
+          arguments: {},
+        },
+      }),
+    );
     const ollama = mockOllama([
       {
         message: { role: "assistant", content: "", tool_calls: excessiveCalls },
@@ -879,7 +884,7 @@ describe("agent contracts", () => {
     vi.unstubAllGlobals();
   });
 
-  it("publishes exactly the ten allowlisted agricultural evidence tools", () => {
+  it("publishes exactly the eleven allowlisted agricultural evidence tools", () => {
     expect(AGENT_TOOL_DEFINITIONS.map((tool) => tool.function.name)).toEqual([
       "list_assets",
       "inspect_asset",
@@ -888,6 +893,7 @@ describe("agent contracts", () => {
       "get_weather_context",
       "get_air_quality",
       "get_official_incidents",
+      "get_smoke_arrival",
       "get_timeline",
       "explain_assessment",
       "geocode_location",
