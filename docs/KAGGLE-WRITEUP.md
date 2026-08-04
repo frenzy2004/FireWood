@@ -48,14 +48,14 @@ what evidence to gather.
 `tools`, `stream: false`, `think: false`, `num_predict: 256`, `temperature: 0.1`
 and reads `message.tool_calls` directly. No LangChain, no JSON-in-prose parsing.
 
-**Eleven allowlisted, schema-validated tools:** `list_assets`, `inspect_asset`,
-`refresh_asset_data`, `get_activity_groups`, `get_weather_context`,
-`get_air_quality`, `get_official_incidents`, `get_smoke_arrival`, `get_timeline`,
-`explain_assessment`, `geocode_location`. Every call is validated against a Zod
+**Twelve allowlisted, schema-validated tools:** `list_assets`, `triage_assets`,
+`inspect_asset`, `refresh_asset_data`, `get_activity_groups`,
+`get_weather_context`, `get_air_quality`, `get_official_incidents`,
+`get_smoke_arrival`, `get_timeline`, `explain_assessment`, `geocode_location`. Every call is validated against a Zod
 schema before execution; unknown names and bad arguments come back to the model
 as structured tool errors instead of throwing.
 
-**Bounded loop.** Six rounds maximum, eleven calls per round, eighteen tool calls
+**Bounded loop.** Six rounds maximum, twelve calls per round, eighteen tool calls
 total, one live refresh, and a single 90-second deadline covering model time and
 tool time together. Exhausting any bound produces a labelled fallback rather than
 a partial briefing.
