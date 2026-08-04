@@ -13,8 +13,10 @@ import {
   validateAgentToolArguments,
   type AgentRepository,
   type AgentToolContext,
+  type AgentToolDefinition,
   type SnapshotService,
 } from "./tools";
+import { selectAgentTools } from "./tool-selection";
 
 export const GEMMA_MODEL = "gemma4:12b";
 /**
@@ -111,6 +113,8 @@ export interface RunAgentInput {
   now?: () => Date;
   monotonicNow?: () => number;
   signal?: AbortSignal;
+  availableTools?: AgentToolDefinition[];
+  maximumRounds?: number;
 }
 
 interface OllamaToolCall {
@@ -1052,6 +1056,16 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   const startedAt = monotonicNow();
   const trace: AgentTraceEntry[] = [];
   const deadline = createAgentDeadline(AGENT_TIMEOUT_MS, input.signal);
+  const availableTools = input.availableTools ?? selectAgentTools(parsedRequest.prompt);
+  const isScopedStarter = input.availableTools === undefined
+    && availableTools.length < AGENT_TOOL_DEFINITIONS.length;
+  const maximumRounds = Math.max(
+    1,
+    Math.min(
+      AGENT_MAX_ROUNDS,
+      input.maximumRounds ?? (isScopedStarter ? 3 : AGENT_MAX_ROUNDS),
+    ),
+  );
   let totalToolCalls = 0;
   let refreshCalls = 0;
   const context: AgentToolContext = {
@@ -1067,7 +1081,10 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   };
   const messages: OllamaMessage[] = [
     { role: "system", content: AGENT_SYSTEM_PROMPT },
-    { role: "user", content: parsedRequest.prompt },
+    {
+      role: "user",
+      content: `${parsedRequest.prompt}\n\nActive asset id: ${parsedRequest.assetId}`,
+    },
   ];
   const finish = (
     status: AgentRunStatus,
@@ -1092,7 +1109,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   });
 
   try {
-    for (let round = 1; round <= AGENT_MAX_ROUNDS; round += 1) {
+    for (let round = 1; round <= maximumRounds; round += 1) {
       let payload: unknown;
       try {
         const response = await deadline.run(() =>
@@ -1102,7 +1119,8 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
             body: JSON.stringify({
               model: GEMMA_MODEL,
               messages,
-              tools: AGENT_TOOL_DEFINITIONS,
+              tools: availableTools,
+              keep_alive: "30m",
               stream: false,
               think: false,
               options: {
@@ -1275,7 +1293,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     return await finish(
       "round-limit",
       fallbackAnswers.roundLimit,
-      AGENT_MAX_ROUNDS,
+      maximumRounds,
     );
   } finally {
     deadline.cancel();

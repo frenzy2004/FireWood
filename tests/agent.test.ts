@@ -201,6 +201,29 @@ describe("Gemma native tool loop", () => {
     );
   });
 
+  it("scopes a starter to one native tool and a three-round local budget", async () => {
+    const ollama = mockOllama(Array.from({ length: 3 }, (_, index) =>
+      toolCall("inspect_asset", {}, `call-inspect-${index}`, index),
+    ));
+
+    const result = await runAgent(runInput(ollama.fetchImplementation, {
+      prompt: "What evidence is missing?",
+    }));
+
+    expect(result).toMatchObject({ status: "round-limit", rounds: 3 });
+    expect(ollama.requests).toHaveLength(3);
+    const firstRequest = ollama.requests[0] as {
+      keep_alive?: string;
+      messages: Array<{ role: string; content: string }>;
+      tools: Array<{ function: { name: string } }>;
+    };
+    expect(firstRequest.keep_alive).toBe("30m");
+    expect(firstRequest.tools.map((tool) => tool.function.name)).toEqual(["inspect_asset"]);
+    expect(firstRequest.messages.find(({ role }) => role === "user")?.content).toBe(
+      `What evidence is missing?\n\nActive asset id: ${asset.id}`,
+    );
+  });
+
   it("returns a bounded tool error for an unknown tool and continues", async () => {
     const ollama = mockOllama([
       toolCall("delete_asset", { assetId: asset.id }),
