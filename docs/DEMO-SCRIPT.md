@@ -180,9 +180,11 @@ Point at the amber wedge opening away from the detections.
 
 > "The wedge is the plume corridor: 50 degrees either side of the 240 degree
 > transport bearing, drawn out to the range the estimate is actually validated
-> over. The arcs inside it are hourly smoke-front positions — 36, 72 and 108
-> kilometres, wind speed times elapsed time. The arithmetic on the arcs is the
-> same arithmetic behind the arrival time. It is drawn rather than asserted."
+> over. The four arcs inside it are hourly smoke-front positions — 22, 58, 94
+> and 130 kilometres at hours two through five. They carry the same 1.4 hour
+> calibration as the arrival time, which is why there is no arc at hour one:
+> the front has not cleared the calibration delay yet. The map cannot draw
+> smoke somewhere the panel says it cannot yet be."
 
 Point at the HUD strip along the bottom of the map.
 
