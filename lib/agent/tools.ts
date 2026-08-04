@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { distanceKm } from "../domain/geometry";
+import { estimateSmokeArrival } from "../domain/smoke";
 import type { GeocodePayload } from "../sources/census";
 import type { StoredAlert, StoredAgentRun } from "../server/repository";
 import type {
@@ -17,6 +18,7 @@ export const AGENT_TOOL_NAMES = [
   "get_weather_context",
   "get_air_quality",
   "get_official_incidents",
+  "get_smoke_arrival",
   "get_timeline",
   "explain_assessment",
   "geocode_location",
@@ -136,6 +138,18 @@ export const AGENT_TOOL_DEFINITIONS: AgentToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "get_smoke_arrival",
+      description:
+        "Estimate when smoke from each detection group reaches the asset, using straight-line advection from the measured wind. Returns transit hours, estimated arrival time, and how far the asset sits off the plume corridor. This is a smoke-transport estimate, not a fire-spread prediction.",
+      parameters: objectParameters({
+        assetId: assetIdProperty,
+        clusterId: clusterIdProperty,
+      }),
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_timeline",
       description: "Get recent satellite detections for a bounded evidence timeline.",
       parameters: objectParameters({
@@ -200,6 +214,12 @@ const toolSchemas = {
     ),
   get_air_quality: assetArgumentsSchema,
   get_official_incidents: assetArgumentsSchema,
+  get_smoke_arrival: z
+    .object({
+      assetId: idSchema.optional(),
+      clusterId: clusterIdSchema.optional(),
+    })
+    .strict(),
   get_timeline: z
     .object({
       assetId: idSchema.optional(),
@@ -477,6 +497,61 @@ export async function executeAgentTool(
           snapshot.groups.length === 0
             ? "No recent satellite detections were returned; this does not establish that no fire exists."
             : null,
+      },
+      sourceStatus: sources,
+    };
+  }
+
+  if (toolName === "get_smoke_arrival") {
+    const groups =
+      typeof argumentsValue.clusterId === "string"
+        ? [findGroup(snapshot, argumentsValue.clusterId)]
+        : snapshot.groups;
+    // Estimates are anchored to the moment the evidence was gathered, not to
+    // wall-clock time, so a replayed snapshot reproduces the same arrival.
+    const referenceInstant = new Date(snapshot.generatedAt);
+    const arrivals = groups.map((group) => ({
+      clusterId: group.cluster.id,
+      centroid: group.cluster.centroid,
+      detectionCount: group.cluster.detectionCount,
+      latestAcquiredAt: group.cluster.latestAcquiredAt,
+      weatherQuality: group.weather?.quality ?? null,
+      arrival: estimateSmokeArrival({
+        asset: savedAsset.location,
+        source: group.cluster.centroid,
+        detectedAt: group.cluster.latestAcquiredAt,
+        windFromDeg: group.weather?.windFromDeg ?? null,
+        windSpeedMps: group.weather?.windSpeedMps ?? null,
+        now: referenceInstant,
+      }),
+    }));
+    const inbound = arrivals
+      .filter((row) => row.arrival.status === "inbound")
+      .sort(
+        (left, right) =>
+          (left.arrival.hoursUntilArrival ?? Infinity) -
+          (right.arrival.hoursUntilArrival ?? Infinity),
+      );
+    return {
+      data: {
+        assetId: savedAsset.id,
+        generatedAt: snapshot.generatedAt,
+        mode: snapshot.mode,
+        sources,
+        referenceInstant: snapshot.generatedAt,
+        method:
+          "Straight-line advection from the detection centroid using measured wind, corrected for observed lateness. Not a fire-spread prediction.",
+        arrivals,
+        soonestInbound: inbound[0] ?? null,
+        missingData: arrivals
+          .flatMap((row) => row.arrival.missingData)
+          .filter((value, index, all) => all.indexOf(value) === index),
+        emptyMeaning:
+          snapshot.groups.length === 0
+            ? "No recent satellite detections were returned; no smoke source is known, which does not establish that none exists."
+            : inbound.length === 0
+              ? "No detection group is currently upwind of this asset. Wind shifts invalidate this immediately."
+              : null,
       },
       sourceStatus: sources,
     };

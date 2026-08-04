@@ -19,7 +19,9 @@ import {
 export const GEMMA_MODEL = "gemma4:12b";
 export const AGENT_TIMEOUT_MS = 45_000;
 export const AGENT_MAX_ROUNDS = 6;
-export const AGENT_MAX_CALLS_PER_ROUND = 10;
+// Sized to the allowlist so the model can exercise every evidence tool in a
+// single round. Raise this alongside AGENT_TOOL_NAMES.
+export const AGENT_MAX_CALLS_PER_ROUND = 11;
 export const AGENT_MAX_TOOL_CALLS = 18;
 export const AGENT_MAX_REFRESH_CALLS = 1;
 
