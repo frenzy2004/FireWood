@@ -183,7 +183,11 @@ export function estimateSmokeArrival(input: SmokeArrivalInput): SmokeArrival {
 
   const rawTransitHours = distance / (windSpeed * 3.6);
   const transitHours = rawTransitHours + ADVECTION_BIAS_HOURS;
-  const arrivalMs = detectedAtMs + transitHours * 3_600_000;
+  // Rounded to the second. Millisecond precision on an estimate whose mean
+  // absolute error is 1.6 hours would be false precision, and it reads as a
+  // confidence the method does not have.
+  const arrivalMs =
+    Math.round((detectedAtMs + transitHours * 3_600_000) / 1_000) * 1_000;
   const hoursUntilArrival = (arrivalMs - input.now.getTime()) / 3_600_000;
 
   // Confidence never exceeds "moderate". One validated event does not justify
