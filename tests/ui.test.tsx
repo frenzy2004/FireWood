@@ -1,12 +1,13 @@
 /** @vitest-environment jsdom */
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgentPanel } from "../app/components/AgentPanel";
 import { ActivityInspector } from "../app/components/ActivityInspector";
 import { SetupPanel } from "../app/components/SetupPanel";
-import { applyReplayState, FULL_REPLAY_STATE } from "../app/components/TimelineDock";
+import { applyReplayState, FULL_REPLAY_STATE, TimelineDock } from "../app/components/TimelineDock";
 import { type DashboardSnapshot, deriveConsoleAlerts } from "../app/hooks/use-dashboard";
 import { Dashboard } from "../app/page";
 
@@ -105,11 +106,17 @@ function backgroundResponse(input: RequestInfo | URL) {
   return new Response(JSON.stringify(snapshot), { status: 200 });
 }
 
+function ReplayHarness() {
+  const [replay, setReplay] = useState(FULL_REPLAY_STATE);
+  return <TimelineDock snapshot={snapshot} replay={replay} onSelect={vi.fn()} onReplayChange={setReplay} />;
+}
+
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => backgroundResponse(input)));
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -239,7 +246,7 @@ describe("EmberField console", () => {
 
   it("scrubs exact raw detections and synchronizes the map count and inspector", async () => {
     render(<Dashboard initialSnapshot={snapshot} />);
-    expect(screen.getByText("2 raw detections")).toBeTruthy();
+    expect(await screen.findByText("2 raw detections")).toBeTruthy();
     expect(screen.getAllByText("2 detected points").length).toBeGreaterThan(0);
 
     fireEvent.change(screen.getByLabelText("Timeline position"), { target: { value: "21" } });
@@ -247,6 +254,23 @@ describe("EmberField console", () => {
     await waitFor(() => expect(screen.getByText("1 raw detection")).toBeTruthy());
     expect(screen.getAllByText("1 detected point").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Replay cutoff 2026-08-03T09:00:00Z/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText("New activity group")).toBeNull();
+  });
+
+  it("plays the next exact evidence event instead of sweeping empty time", async () => {
+    vi.useFakeTimers();
+    render(<ReplayHarness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Play timeline" }));
+    expect((screen.getByLabelText("Timeline position") as HTMLInputElement).value).toBe("0");
+
+    await act(async () => {
+      vi.advanceTimersByTime(900);
+    });
+
+    expect((screen.getByLabelText("Timeline position") as HTMLInputElement).value).toBe("21");
+    expect(screen.getByText("Event 1 of 3")).toBeTruthy();
+    vi.useRealTimers();
   });
 
   it("uses the replay cutoff as snapshot time and hides the latest assessment", () => {
@@ -272,6 +296,31 @@ describe("EmberField console", () => {
     expect(replayed?.sources.firms?.fetchedAt).toBeNull();
     expect(replayed?.sources.nws?.observedAt).toBeNull();
     expect(replayed?.sources.nws?.fetchedAt).toBeNull();
+  });
+
+  it("hides official context until its WFIGS observation exists", () => {
+    const withOfficialContext: DashboardSnapshot = {
+      ...snapshot,
+      incidents: [{ id: "incident-1", name: "Future incident", location: { lat: 41.05, lon: -116.54 } }],
+      perimeters: [{ id: "perimeter-1", geometry: { type: "Polygon", coordinates: [] } }],
+      groups: [{
+        ...snapshot.groups[0],
+        officialMatch: {
+          incident: { id: "incident-1", name: "Future incident", percentContained: 20, updatedAt: "2026-08-03T11:10:00.000Z" },
+          method: "proximity",
+          distanceKm: 0.2,
+        },
+      }],
+    };
+
+    const replayed = applyReplayState(withOfficialContext, {
+      cutoff: "2026-08-03T09:00:00.000Z",
+      sources: FULL_REPLAY_STATE.sources,
+    });
+
+    expect(replayed?.incidents).toEqual([]);
+    expect(replayed?.perimeters).toEqual([]);
+    expect(replayed?.groups[0]?.officialMatch).toBeNull();
   });
 
   it("preserves complete source freshness when the replay is at now", () => {

@@ -41,6 +41,12 @@ export function Dashboard({ initialSnapshot }: { initialSnapshot?: DashboardSnap
     ? replaySession.state
     : FULL_REPLAY_STATE;
   const replaySnapshot = useMemo(() => applyReplayState(snapshot, replay), [replay, snapshot]);
+  const replayAlerts = useMemo(() => {
+    if (replay.cutoff === null) return dashboard.alerts;
+    const cutoffMs = Date.parse(replay.cutoff);
+    if (!Number.isFinite(cutoffMs)) return [];
+    return dashboard.alerts.filter((alert) => Date.parse(alert.acquiredAt) <= cutoffMs);
+  }, [dashboard.alerts, replay.cutoff]);
   const limited = snapshot?.groups.some((group) => group.assessment.dataQuality === "limited" || group.assessment.completeness !== "complete");
   const updateReplay = useCallback((state: ReplayState) => {
     setReplaySession({ snapshotIdentity, state });
@@ -57,7 +63,7 @@ export function Dashboard({ initialSnapshot }: { initialSnapshot?: DashboardSnap
     else if (event.key === "End") { event.preventDefault(); activateTab(tabs.length - 1, true); }
   };
   const assetRail = <AssetRail assets={dashboard.assets} selectedId={dashboard.selectedAsset.id} summaries={dashboard.summaries} onSelect={dashboard.selectAsset} onAdd={() => setSetupOpen(true)} storageMessage={dashboard.assetStorageError} triage={dashboard.triage} triagePending={dashboard.triagePending} onTriage={() => { void dashboard.runTriage(); }} />;
-  const inspector = <ActivityInspector snapshot={replaySnapshot} selectedGroupId={dashboard.selectedGroupId} alerts={dashboard.alerts} replayCutoff={replay.cutoff} />;
+  const inspector = <ActivityInspector snapshot={replaySnapshot} selectedGroupId={dashboard.selectedGroupId} alerts={replayAlerts} replayCutoff={replay.cutoff} />;
   const timeline = <TimelineDock snapshot={snapshot} replay={replay} onSelect={dashboard.setSelectedGroupId} onReplayChange={updateReplay} />;
   const agent = <AgentPanel snapshot={snapshot} selectedAssetId={dashboard.selectedAsset.id} ollamaStatus={dashboard.health?.integrations.ollama.status} />;
   const errorHeading = dashboard.error?.status === 429
