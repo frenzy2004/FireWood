@@ -1,6 +1,6 @@
 "use client";
 
-import { Crosshair, Fire, WarningCircle, X } from "@phosphor-icons/react";
+import { Crosshair, Fire, Target, WarningCircle, X } from "@phosphor-icons/react";
 
 import { formatUtc } from "../hooks/use-dashboard";
 import type { MapEvidenceDetail } from "./map-evidence";
@@ -16,9 +16,11 @@ function EvidenceIcon({ kind }: { kind: MapEvidenceDetail["kind"] }) {
 export function MapEvidenceCard({
   detail,
   onClose,
+  onFocus,
 }: {
   detail: MapEvidenceDetail;
   onClose: () => void;
+  onFocus: () => void;
 }) {
   return (
     <aside className={`map-evidence-card ${detail.kind}`} role="region" aria-label="Selected map evidence">
@@ -65,6 +67,10 @@ export function MapEvidenceCard({
       <p className="map-evidence-coordinates">
         {detail.location.lat.toFixed(4)}, {detail.location.lon.toFixed(4)}
       </p>
+      <button className="map-evidence-focus" type="button" onClick={onFocus}>
+        <Target size={16} weight="bold" />
+        Focus on map
+      </button>
     </aside>
   );
 }

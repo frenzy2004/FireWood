@@ -177,7 +177,15 @@ describe("EmberField smoke arrival", () => {
 
     render(<MapCanvas snapshot={mapSnapshot} selectedGroupId="cluster-1" onSelect={vi.fn()} />);
 
-    expect(await screen.findByRole("button", { name: "Reset map view" })).toBeTruthy();
+    const assetFocus = await screen.findByRole("button", { name: "Focus asset" });
+    const evidenceFocus = screen.getByRole("button", { name: "Fit all evidence" });
+    const threatFocus = screen.getByRole("button", { name: "Focus active threat" });
+    expect(assetFocus.getAttribute("aria-pressed")).toBe("true");
+    expect(evidenceFocus.getAttribute("aria-pressed")).toBe("false");
+    expect(threatFocus.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(evidenceFocus);
+    expect(evidenceFocus.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("Evidence framed in fallback view")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Toggle FIRMS detections" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: "Toggle official incidents" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: "Toggle official perimeters" })).toBeTruthy();
@@ -188,9 +196,36 @@ describe("EmberField smoke arrival", () => {
     const evidence = screen.getByRole("region", { name: "Selected map evidence" });
     expect(within(evidence).getByRole("heading", { name: "CHUTE" })).toBeTruthy();
     expect(evidence.textContent).toMatch(/WFIGS.*162 acres.*95% contained.*2026-08-03T11:15:00Z/i);
+    fireEvent.click(within(evidence).getByRole("button", { name: "Focus on map" }));
+    expect(screen.getByText("Selected evidence focused in fallback view")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Toggle official incidents" }));
     expect(screen.queryByRole("button", { name: "Select official incident CHUTE" })).toBeNull();
+  });
+
+  it("accepts a replay focus request without requiring WebGL", async () => {
+    const { rerender } = render(
+      <MapCanvas
+        snapshot={inboundSnapshot}
+        selectedGroupId="cluster-1"
+        onSelect={vi.fn()}
+      />,
+    );
+    await screen.findByRole("button", { name: "Focus asset" });
+
+    rerender(
+      <MapCanvas
+        snapshot={inboundSnapshot}
+        selectedGroupId="cluster-1"
+        onSelect={vi.fn()}
+        focusRequest={{ id: 1, mode: "threat", groupId: "cluster-1" }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Focus active threat" }).getAttribute("aria-pressed")).toBe("true");
+    });
+    expect(screen.getByText("Threat framed in fallback view")).toBeTruthy();
   });
 
   it("states the arrival hours, the estimated arrival line, and a map chip when smoke is inbound", async () => {

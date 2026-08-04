@@ -39,6 +39,13 @@ import {
   detectionSelectionId,
   type MapSelection,
 } from "./map-evidence";
+import {
+  buildMapFocusPlan,
+  groupForDetection,
+  selectionLocation,
+  type MapFocusMode,
+  type MapFocusRequest,
+} from "./map-navigation";
 
 const style = {
   version: 8 as const,
@@ -107,18 +114,6 @@ function arrivalHudLabel(arrival: SmokeArrival): string {
   }
 }
 
-function assetBounds(lat: number, lon: number, radiusKm: number): [[number, number], [number, number]] {
-  const latitudeDelta = Math.max(0.01, radiusKm / 111.32);
-  const longitudeDelta = Math.max(
-    0.01,
-    radiusKm / (111.32 * Math.max(0.1, Math.cos((lat * Math.PI) / 180))),
-  );
-  return [
-    [lon - longitudeDelta, lat - latitudeDelta],
-    [lon + longitudeDelta, lat + latitudeDelta],
-  ];
-}
-
 function LayerToggle({
   active,
   icon,
@@ -151,15 +146,20 @@ export function MapCanvas({
   snapshot,
   selectedGroupId,
   onSelect,
+  focusRequest,
 }: {
   snapshot?: DashboardSnapshot;
   selectedGroupId: string;
   onSelect: (id: string) => void;
+  focusRequest?: MapFocusRequest;
 }) {
   const [canUseMap, setCanUseMap] = useState(false);
   const [layers, setLayers] = useState<MapLayers>(defaultLayers);
   const [selection, setSelection] = useState<MapSelection>(null);
+  const [focusMode, setFocusMode] = useState<MapFocusMode | "selection">("asset");
+  const [focusAnnouncement, setFocusAnnouncement] = useState("Asset framed in fallback view");
   const mapRef = useRef<MapRef>(null);
+  const handledFocusRequest = useRef(0);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -168,21 +168,53 @@ export function MapCanvas({
     return () => window.cancelAnimationFrame(frame);
   }, []);
 
-  const assetLat = snapshot?.asset.location.lat;
-  const assetLon = snapshot?.asset.location.lon;
-  const assetRadiusKm = snapshot?.asset.radiusKm;
-  const fitAsset = useCallback(() => {
-    if (assetLat === undefined || assetLon === undefined || assetRadiusKm === undefined) return;
-    mapRef.current?.fitBounds(assetBounds(assetLat, assetLon, assetRadiusKm), {
-      padding: 48,
-      maxZoom: 12,
-      duration: 0,
+  const transitionDuration = useCallback(() => (
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 0 : 700
+  ), []);
+
+  const focusMapMode = useCallback((mode: MapFocusMode, groupId = "") => {
+    if (!snapshot) return;
+    const plan = buildMapFocusPlan(snapshot, mode, groupId);
+    setFocusMode(plan.mode);
+    mapRef.current?.fitBounds(plan.bounds, {
+      padding: plan.mode === "asset" ? 48 : plan.mode === "evidence" ? 56 : 72,
+      maxZoom: plan.mode === "asset" ? 12 : plan.mode === "evidence" ? 11 : 10.5,
+      duration: transitionDuration(),
     });
-  }, [assetLat, assetLon, assetRadiusKm]);
+    const label = plan.mode === "asset" ? "Asset" : plan.mode === "evidence" ? "Evidence" : "Threat";
+    setFocusAnnouncement(`${label} framed${canUseMap ? "" : " in fallback view"}`);
+  }, [canUseMap, snapshot, transitionDuration]);
 
   useEffect(() => {
-    fitAsset();
-  }, [fitAsset]);
+    focusMapMode("asset");
+  }, [focusMapMode]);
+
+  useEffect(() => {
+    if (!focusRequest || focusRequest.id === handledFocusRequest.current) return;
+    handledFocusRequest.current = focusRequest.id;
+    focusMapMode(focusRequest.mode, focusRequest.groupId);
+  }, [focusMapMode, focusRequest]);
+
+  const focusMapSelection = useCallback((nextSelection: Exclude<MapSelection, null>) => {
+    if (!snapshot) return;
+    setSelection(nextSelection);
+    if (nextSelection.kind === "group") {
+      onSelect(nextSelection.id);
+    } else if (nextSelection.kind === "detection") {
+      const group = groupForDetection(snapshot, nextSelection.id);
+      if (group) onSelect(group.cluster.id);
+    }
+    const location = selectionLocation(snapshot, nextSelection);
+    if (!location) return;
+    setFocusMode("selection");
+    const map = mapRef.current;
+    map?.easeTo({
+      center: [location.lon, location.lat],
+      zoom: Math.max(map.getZoom(), 10.5),
+      duration: transitionDuration(),
+    });
+    setFocusAnnouncement(`Selected evidence focused${canUseMap ? "" : " in fallback view"}`);
+  }, [canUseMap, onSelect, snapshot, transitionDuration]);
 
   if (!snapshot) {
     return (
@@ -281,7 +313,7 @@ export function MapCanvas({
           ref={mapRef}
           initialViewState={{ longitude: asset.location.lon, latitude: asset.location.lat, zoom: 9.4 }}
           mapStyle={style}
-          onLoad={fitAsset}
+          onLoad={() => focusMapMode("asset")}
         >
           <NavigationControl position="top-right" showCompass />
           <FullscreenControl position="top-right" />
@@ -324,7 +356,7 @@ export function MapCanvas({
                   aria-label={`Select ${detection.satellite} heat anomaly acquired ${formatUtc(detection.acquiredAt)}`}
                   aria-pressed={selection?.kind === "detection" && selection.id === id}
                   title={`${detection.satellite} heat anomaly acquired ${formatUtc(detection.acquiredAt)}`}
-                  onClick={() => setSelection({ kind: "detection", id })}
+                  onClick={() => focusMapSelection({ kind: "detection", id })}
                 />
               </Marker>
             );
@@ -336,8 +368,7 @@ export function MapCanvas({
               <Marker key={group.cluster.id} longitude={group.cluster.centroid.lon} latitude={group.cluster.centroid.lat}>
                 <button
                   onClick={() => {
-                    onSelect(group.cluster.id);
-                    setSelection({ kind: "group", id: group.cluster.id });
+                    focusMapSelection({ kind: "group", id: group.cluster.id });
                   }}
                   style={{ width: size, height: size }}
                   className={`cluster-mark ${selectedGroupId === group.cluster.id ? "selected" : ""}`}
@@ -357,7 +388,7 @@ export function MapCanvas({
                 aria-label={`Select official incident ${incident.name}`}
                 aria-pressed={selection?.kind === "incident" && selection.id === incident.id}
                 title={`Official incident context: ${incident.name}`}
-                onClick={() => setSelection({ kind: "incident", id: incident.id })}
+                onClick={() => focusMapSelection({ kind: "incident", id: incident.id })}
               >
                 <WarningCircle size={24} weight="fill" />
               </button>
@@ -391,7 +422,7 @@ export function MapCanvas({
                 style={{ top: `${28 + row * 14}%`, left: `${34 + column * 9}%` }}
                 aria-label={`Select ${detection.satellite} heat anomaly acquired ${formatUtc(detection.acquiredAt)}`}
                 aria-pressed={selection?.kind === "detection" && selection.id === id}
-                onClick={() => setSelection({ kind: "detection", id })}
+                onClick={() => focusMapSelection({ kind: "detection", id })}
               />
             );
           }) : null}
@@ -403,8 +434,7 @@ export function MapCanvas({
                 key={group.cluster.id}
                 type="button"
                 onClick={() => {
-                  onSelect(group.cluster.id);
-                  setSelection({ kind: "group", id: group.cluster.id });
+                  focusMapSelection({ kind: "group", id: group.cluster.id });
                 }}
                 style={{ width: size, height: size }}
                 className={`cluster-mark fallback-cluster cluster-${index + 1} ${selectedGroupId === group.cluster.id ? "selected" : ""}`}
@@ -423,7 +453,7 @@ export function MapCanvas({
               aria-label={`Select official incident ${incident.name}`}
               aria-pressed={selection?.kind === "incident" && selection.id === incident.id}
               title={`Official incident context: ${incident.name}`}
-              onClick={() => setSelection({ kind: "incident", id: incident.id })}
+              onClick={() => focusMapSelection({ kind: "incident", id: incident.id })}
             >
               <WarningCircle size={24} weight="fill" />
             </button>
@@ -438,9 +468,17 @@ export function MapCanvas({
       )}
 
       <div className="map-toolbar" aria-label="Map controls">
-        <button className="map-reset-button" type="button" onClick={fitAsset} aria-label="Reset map view" title="Reset map view">
-          <Target size={17} weight="bold" />
-        </button>
+        <div className="map-focus-controls" aria-label="Map focus">
+          <button className="map-focus-button" type="button" onClick={() => focusMapMode("asset")} aria-label="Focus asset" aria-pressed={focusMode === "asset"} title="Focus asset">
+            <MapPin size={15} weight="fill" /><span>Asset</span>
+          </button>
+          <button className="map-focus-button" type="button" onClick={() => focusMapMode("evidence")} aria-label="Fit all evidence" aria-pressed={focusMode === "evidence"} title="Fit all evidence">
+            <Stack size={15} weight="fill" /><span>Evidence</span>
+          </button>
+          <button className="map-focus-button" type="button" onClick={() => focusMapMode("threat", selectedGroupId)} aria-label="Focus active threat" aria-pressed={focusMode === "threat"} title="Focus active threat">
+            <Target size={15} weight="bold" /><span>Threat</span>
+          </button>
+        </div>
         <div className="map-layer-controls">
           <LayerToggle active={layers.detections} icon={<Fire size={15} />} label="Toggle FIRMS detections" shortLabel="FIRMS" onClick={() => toggleLayer("detections")} />
           <LayerToggle active={layers.incidents} icon={<WarningCircle size={15} />} label="Toggle official incidents" shortLabel="Incidents" onClick={() => toggleLayer("incidents")} />
@@ -456,7 +494,9 @@ export function MapCanvas({
         <span><Stack size={13} weight="fill" /> {snapshot.perimeters.length} perimeter{snapshot.perimeters.length === 1 ? "" : "s"}</span>
       </div>
 
-      {detail ? <MapEvidenceCard detail={detail} onClose={() => setSelection(null)} /> : null}
+      {detail && selection ? <MapEvidenceCard detail={detail} onClose={() => setSelection(null)} onFocus={() => focusMapSelection(selection)} /> : null}
+
+      <span className="sr-only" aria-live="polite">{focusAnnouncement}</span>
 
       <div className="map-hud">
         <span><Crosshair size={15} /> {asset.radiusKm.toFixed(0)} km radius</span>
