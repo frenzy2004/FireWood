@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { distanceKm } from "../domain/geometry";
 import { estimateSmokeArrival, type SmokeArrival } from "../domain/smoke";
+import { triagePortfolio, type TriageAssetInput } from "../domain/triage";
 import type { GeocodePayload } from "../sources/census";
 import type { StoredAlert, StoredAgentRun } from "../server/repository";
 import type {
@@ -12,6 +13,7 @@ import type { Snapshot, SnapshotGroup } from "../server/snapshot";
 
 export const AGENT_TOOL_NAMES = [
   "list_assets",
+  "triage_assets",
   "inspect_asset",
   "refresh_asset_data",
   "get_activity_groups",
@@ -79,6 +81,15 @@ export const AGENT_TOOL_DEFINITIONS: AgentToolDefinition[] = [
     function: {
       name: "list_assets",
       description: "List saved agricultural assets with coordinates and alert radii.",
+      parameters: objectParameters({}),
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "triage_assets",
+      description:
+        "Rank every saved asset by how much attention it needs right now, soonest smoke arrival first. Use this to answer which place is in trouble, or to compare assets. One call covers the whole portfolio — do not call the single-asset tools once per asset to build this yourself.",
       parameters: objectParameters({}),
     },
   },
@@ -201,12 +212,23 @@ export const AGENT_TOOL_DEFINITIONS: AgentToolDefinition[] = [
  */
 const SMOKE_ARRIVAL_REPORT_LIMIT = 3;
 
+/**
+ * Most assets scanned in one triage call.
+ *
+ * Each asset costs a snapshot, and in live mode a snapshot hits four external
+ * sources. The run shares a single wall-clock deadline, so an unbounded scan
+ * would trade a useful answer for a timeout. Assets beyond this are reported
+ * as omitted rather than silently dropped.
+ */
+const TRIAGE_ASSET_LIMIT = 6;
+
 const idSchema = z.string().trim().min(1).max(128);
 const clusterIdSchema = z.string().trim().min(1).max(160);
 const assetArgumentsSchema = z.object({ assetId: idSchema.optional() }).strict();
 
 const toolSchemas = {
   list_assets: z.object({}).strict(),
+  triage_assets: z.object({}).strict(),
   inspect_asset: assetArgumentsSchema,
   refresh_asset_data: assetArgumentsSchema,
   get_activity_groups: assetArgumentsSchema,
@@ -465,6 +487,54 @@ export async function executeAgentTool(
         missingData: [],
       },
       sourceStatus: null,
+    };
+  }
+
+  if (toolName === "triage_assets") {
+    const assets = await context.repository.listAssets(context.signal);
+    ensureActive(context);
+    const scanned = assets.slice(0, TRIAGE_ASSET_LIMIT);
+    // Sequential rather than parallel: each snapshot may hit four live
+    // sources, and the run shares one deadline. snapshotFor reuses anything
+    // already gathered this run, so an asset inspected earlier is free here.
+    const inputs: TriageAssetInput[] = [];
+    const sourceStates: Record<string, unknown> = {};
+    for (const savedAsset of scanned) {
+      const snapshot = await snapshotFor(context, savedAsset);
+      Object.assign(sourceStates, sourceEvidence(snapshot));
+      inputs.push({
+        asset: savedAsset,
+        generatedAt: snapshot.generatedAt,
+        detectionCount: snapshot.detections.length,
+        groups: snapshot.groups.map((group) => ({
+          centroid: group.cluster.centroid,
+          detectionCount: group.cluster.detectionCount,
+          latestAcquiredAt: group.cluster.latestAcquiredAt,
+          weather: group.weather,
+          score: group.assessment.score,
+          band: group.assessment.band,
+          missingInputs: group.assessment.missingInputs,
+        })),
+        air: snapshot.air,
+      });
+    }
+    const portfolio = triagePortfolio(inputs);
+    return {
+      data: {
+        ...portfolio,
+        assetsSaved: assets.length,
+        assetsOmitted: Math.max(0, assets.length - scanned.length),
+        method:
+          "Each asset's groups are scored for smoke arrival, then assets are ranked by status and imminence. Ordering is deterministic. Not a fire-spread prediction.",
+        missingData: [
+          ...new Set(portfolio.assets.flatMap((row) => row.missingData)),
+        ],
+        emptyMeaning:
+          assets.length === 0
+            ? "No assets are saved, so nothing could be ranked."
+            : null,
+      },
+      sourceStatus: Object.keys(sourceStates).length > 0 ? sourceStates : null,
     };
   }
 

@@ -35,7 +35,7 @@ export const AGENT_TIMEOUT_MS = 90_000;
 export const AGENT_MAX_ROUNDS = 6;
 // Sized to the allowlist so the model can exercise every evidence tool in a
 // single round. Raise this alongside AGENT_TOOL_NAMES.
-export const AGENT_MAX_CALLS_PER_ROUND = 11;
+export const AGENT_MAX_CALLS_PER_ROUND = 12;
 export const AGENT_MAX_TOOL_CALLS = 18;
 export const AGENT_MAX_REFRESH_CALLS = 1;
 
@@ -366,6 +366,16 @@ const FIELD_LABEL_ALIASES: Record<string, string[]> = {
   ],
   offAxisDeg: ["off axis", "off the transport bearing", "degrees off"],
   assetBearingDeg: ["asset bearing", "bearing to asset"],
+  // Portfolio triage counts. A briefing naturally writes "1 asset of 4
+  // scanned", which splits the two numbers across ordinary words rather than
+  // repeating either field name.
+  assetsScanned: ["assets scanned", "scanned", "sites scanned", "of"],
+  assetsInbound: ["assets inbound", "asset", "assets", "sites", "inbound"],
+  assetsSaved: ["assets saved", "saved assets"],
+  assetsOmitted: ["assets omitted", "omitted"],
+  groupCount: ["detection groups", "groups", "group count"],
+  nearestGroupKm: ["nearest detection group", "nearest group", "nearest"],
+  worstScore: ["worst score", "highest score", "score"],
 };
 
 const SOURCE_SELECTOR_ALIASES: Record<string, string[]> = {

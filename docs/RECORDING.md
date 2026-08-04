@@ -74,7 +74,7 @@ ollama run gemma4:12b
 At the `>>>` prompt, type `say ok`, wait for the reply, then type `/bye`.
 
 This is not optional and it is not superstition. `docs/SELF-EVALUATION.md`
-records a cold or queued run that hit the agent's 45 second budget and timed
+records a cold or queued run that hit the agent's budget and timed
 out. The successful warm run finished in about 26 seconds. A cold model on
 camera is the single most likely way this recording fails.
 

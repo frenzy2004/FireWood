@@ -155,7 +155,7 @@ minutes.
 
 1. `ollama serve` in its own terminal.
 2. `ollama run gemma4:12b` once, ask it anything, then `/bye`. A cold model can
-   exceed the agent's 45 second budget; `docs/SELF-EVALUATION.md` records a cold
+   exceed the agent's 90 second budget; `docs/SELF-EVALUATION.md` records a cold
    run that actually did time out. A warm run finished in about 26 seconds.
 3. `npm run dev` in its own terminal. Open the URL it prints, on 127.0.0.1.
 4. In the asset rail, select **Colusa County Orchard (Camp Fire replay)**.
@@ -285,7 +285,7 @@ If Live returns nothing, do not apologise. Say:
 | --- | --- | --- |
 | Dev server will not start | "Let me show you the part that never needs a server." | Go back to the terminal and re-run `npm run replay`. |
 | Gemma status shows Offline | "The agent is local, so when Ollama is down the console says so instead of inventing an answer." | Skip to the timeline beat. |
-| Gemma times out | "That is the 45 second budget doing its job rather than hanging." | Move on. Do not retry on stage. |
+| Gemma times out | "That is the 90 second budget doing its job rather than hanging." | Move on. Do not retry on stage. |
 | Live returns no groups | "A valid empty result, not a failure." | Point at the source freshness rows showing NWS correctly marked not requested. |
 | Map fails to render | "There is a non-WebGL fallback, which is the same evidence without the tiles." | Carry on in the fallback view. |
 | Anything else | Nothing. | Re-run `npm run replay`. It is 0.3 seconds and it always works. |

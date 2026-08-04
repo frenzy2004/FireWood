@@ -62,6 +62,18 @@ the panel beside it says smoke cannot yet be. Arcs beyond the corridor range are
 omitted rather than clamped, so the map never implies more reach than the method
 has.
 
+**The question only an agent can answer.** Every panel in the console describes
+one asset. An operator with an orchard, a barn, a livestock pasture, a storage
+site and a crew in the field has a different question, and it is the one that
+matters most: which of my places is in trouble right now? That is a judgement
+across assets, so no single-asset panel can produce it. `triage_assets` reduces
+each asset to one comparable row and ranks the portfolio deterministically —
+soonest smoke arrival first — and Gemma reads the ranking out. Measured live
+against a fire in the Washington Cascades with four saved assets, one call
+returned: "1 asset of 4 scanned has smoke inbound. Chelan crew site is soonest
+and arrives in 7.3 hours." Ordering is decided in code; the model does not get
+to invent the ranking.
+
 **The line we do not cross.** We will not predict where a fire goes. Fire spread
 is genuinely hard and getting it wrong is dangerous. Smoke advection from an
 already-detected source is a different and far more tractable problem, and
@@ -81,7 +93,7 @@ Every call is schema-validated. The trace shows the tool, safe arguments, durati
 
 - Actual local `gemma4:12b`, not a mock or hosted proxy.
 - Ollama native `message.tool_calls` with multi-round tool continuation.
-- Eleven domain-specific, schema-validated functions, including a Camp-Fire-validated smoke-arrival estimate.
+- Twelve domain-specific, schema-validated functions, including a Camp-Fire-validated smoke-arrival estimate.
 - Source-grounding system prompt and a visible, redacted execution trace.
 - Graceful offline, invalid-call, timeout, and round-limit behavior.
 

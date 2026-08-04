@@ -56,7 +56,7 @@ schema before execution; unknown names and bad arguments come back to the model
 as structured tool errors instead of throwing.
 
 **Bounded loop.** Six rounds maximum, eleven calls per round, eighteen tool calls
-total, one live refresh, and a single 45-second deadline covering model time and
+total, one live refresh, and a single 90-second deadline covering model time and
 tool time together. Exhausting any bound produces a labelled fallback rather than
 a partial briefing.
 
@@ -138,7 +138,7 @@ time from a tool result failed against that same result. Fixed by indexing ISO
 timestamp components additively.
 
 **Cold-start latency.** The final warm run completed in about 26.2 seconds
-against a 45-second budget. A cold or queued model did hit the timeout, so the
+against the run budget. A cold or queued model did hit the timeout, so the
 demo checklist includes warming the model first.
 
 **Calibration honesty.** The obvious move after seeing a 9.8-hour miss is to

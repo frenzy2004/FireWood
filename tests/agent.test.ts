@@ -226,6 +226,7 @@ describe("Gemma native tool loop", () => {
   it("executes every allowlisted evidence tool without persisting refresh snapshots", async () => {
     const argumentsByTool: Record<string, Record<string, unknown>> = {
       list_assets: {},
+      triage_assets: {},
       inspect_asset: { assetId: asset.id },
       refresh_asset_data: { assetId: asset.id },
       get_activity_groups: { assetId: asset.id },
@@ -273,7 +274,7 @@ describe("Gemma native tool loop", () => {
       messages: Array<{ role: string; content: string }>;
     };
     const toolMessages = continuation.messages.filter(({ role }) => role === "tool");
-    expect(toolMessages).toHaveLength(11);
+    expect(toolMessages).toHaveLength(12);
     expect(
       toolMessages.every(
         ({ content }) => new TextEncoder().encode(content).byteLength <= 6_000,
@@ -885,9 +886,10 @@ describe("agent contracts", () => {
     vi.unstubAllGlobals();
   });
 
-  it("publishes exactly the eleven allowlisted agricultural evidence tools", () => {
+  it("publishes exactly the twelve allowlisted agricultural evidence tools", () => {
     expect(AGENT_TOOL_DEFINITIONS.map((tool) => tool.function.name)).toEqual([
       "list_assets",
+      "triage_assets",
       "inspect_asset",
       "refresh_asset_data",
       "get_activity_groups",
