@@ -51,6 +51,13 @@ No monitor was warned more than 2.2 hours late. Two of the fourteen are badly
 wrong, both early, both terrain channelling — and both are kept in the test
 suite. A validation fixture that drops its failures is not a validation.
 
+The console draws it as well as states it: a corridor wedge opening the validated
+50 degrees either side of the transport bearing, with hourly isochrone arcs marking
+where the leading edge should be after each hour. Distance is wind speed times
+elapsed time — the same arithmetic the estimator performs, drawn rather than
+asserted. Arcs beyond the corridor range are omitted rather than clamped, so the
+map never implies more reach than the method has.
+
 **The line we do not cross.** We will not predict where a fire goes. Fire spread
 is genuinely hard and getting it wrong is dangerous. Smoke advection from an
 already-detected source is a different and far more tractable problem, and

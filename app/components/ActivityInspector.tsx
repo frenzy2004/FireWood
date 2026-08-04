@@ -69,7 +69,13 @@ export function ActivityInspector({
       ? `Estimated arrival ${formatUtc(arrival.estimatedArrivalAt)} has already passed`
       : arrival.missingData.length > 0
         ? `Missing: ${arrival.missingData.join(", ")}`
-        : `${arrival.offAxisDeg ?? "Unknown"}° off the transport bearing`;
+        : arrival.status === "calm-wind"
+          // Calm wind has no missingData and no off-axis angle, because without a
+          // usable wind there is no transport bearing to be off.
+          ? "Wind is below the speed where a transport direction is meaningful"
+          : arrival.offAxisDeg !== null
+            ? `${arrival.offAxisDeg}° off the transport bearing`
+            : "No transport direction available";
 
   return <aside className="inspector panel" aria-label="Activity inspector">
     <div className="panel-heading"><div><p className="eyebrow">Activity inspector</p><h2>{pointLabel}</h2></div><div className="assessment-badges"><span className={`band ${limited ? "limited" : ""}`}>{limited ? "Limited data" : title(assessment.band)}</span><span className="completeness">{title(assessment.completeness)}</span></div></div>
