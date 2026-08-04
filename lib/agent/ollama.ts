@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { boundedJson, SourceAdapterError } from "../sources/shared";
 import { geocodeAddress, type GeocodePayload } from "../sources/census";
+import type { AgentProgressEvent } from "./events";
 import {
   AGENT_TOOL_DEFINITIONS,
   AgentToolExecutionError,
@@ -115,6 +116,7 @@ export interface RunAgentInput {
   signal?: AbortSignal;
   availableTools?: AgentToolDefinition[];
   maximumRounds?: number;
+  onProgress?: (event: AgentProgressEvent) => void;
 }
 
 interface OllamaToolCall {
@@ -1086,30 +1088,42 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
       content: `${parsedRequest.prompt}\n\nActive asset id: ${parsedRequest.assetId}`,
     },
   ];
+  const emitProgress = (event: AgentProgressEvent) => {
+    try {
+      input.onProgress?.(event);
+    } catch {
+      // Rendering progress is best-effort and cannot change the evidence run.
+    }
+  };
   const finish = (
     status: AgentRunStatus,
     answer: string,
     rounds: number,
-  ): AgentResult => ({
-    status,
-    answer,
-    // Derived from status rather than passed in, so no exit path can leave the
-    // reader thinking the model wrote something it did not.
-    answerSource:
-      status === "ok"
-        ? "model"
-        : status === "evidence-answer"
-          ? "evidence"
-          : "fallback",
-    model: GEMMA_MODEL,
-    trace,
-    rounds,
-    durationMs: Math.max(0, Math.round(monotonicNow() - startedAt)),
-    persistenceStatus: "not-persisted",
-  });
+  ): AgentResult => {
+    const result: AgentResult = {
+      status,
+      answer,
+      // Derived from status rather than passed in, so no exit path can leave the
+      // reader thinking the model wrote something it did not.
+      answerSource:
+        status === "ok"
+          ? "model"
+          : status === "evidence-answer"
+            ? "evidence"
+            : "fallback",
+      model: GEMMA_MODEL,
+      trace,
+      rounds,
+      durationMs: Math.max(0, Math.round(monotonicNow() - startedAt)),
+      persistenceStatus: "not-persisted",
+    };
+    emitProgress({ type: "complete", result });
+    return result;
+  };
 
   try {
     for (let round = 1; round <= maximumRounds; round += 1) {
+      emitProgress({ type: "round-start", round });
       let payload: unknown;
       try {
         const response = await deadline.run(() =>
@@ -1268,7 +1282,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
           }
         }
 
-        trace.push({
+        const traceEntry: AgentTraceEntry = {
           evidenceRef,
           callId: `trace-${trace.length + 1}`,
           functionIndex: call.function.index ?? null,
@@ -1281,7 +1295,9 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
           status,
           sourceStatus,
           resultSummary: toolResult.summary,
-        });
+        };
+        trace.push(traceEntry);
+        emitProgress({ type: "tool-complete", entry: traceEntry });
         messages.push({
           role: "tool",
           tool_name: toolName,

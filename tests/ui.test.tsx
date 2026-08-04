@@ -547,6 +547,65 @@ describe("EmberField console", () => {
     expect(screen.getByText(/sources.*fetchedAt/i)).toBeTruthy();
   });
 
+  it("shows only truthful Gemma round and completed-tool stream progress", async () => {
+    const encoder = new TextEncoder();
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "application/x-ndjson; charset=utf-8" },
+    })));
+    render(<AgentPanel snapshot={snapshot} selectedAssetId={snapshot.asset.id} ollamaStatus="ready" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "What evidence is missing?" }));
+    await act(async () => {
+      streamController?.enqueue(encoder.encode(`${JSON.stringify({ type: "round-start", round: 1 })}\n`));
+    });
+
+    expect(await screen.findByText(/Round 1/i)).toBeTruthy();
+    expect(screen.queryByText(/inspect_asset completed/i)).toBeNull();
+
+    const entry = {
+      evidenceRef: "1",
+      callId: "trace-1",
+      functionIndex: 0,
+      toolName: "inspect_asset",
+      validatedArguments: {},
+      durationMs: 28,
+      status: "ok",
+      sourceStatus: { firms: { status: "ok" } },
+      resultSummary: { summary: "Evidence inspected." },
+    };
+    await act(async () => {
+      streamController?.enqueue(encoder.encode(`${JSON.stringify({ type: "tool-complete", entry })}\n`));
+    });
+    expect(await screen.findByText(/inspect_asset completed in 28 ms/i)).toBeTruthy();
+
+    await act(async () => {
+      streamController?.enqueue(encoder.encode(`${JSON.stringify({
+        type: "complete",
+        result: {
+          status: "ok",
+          answer: "Evidence inspected. [evidence:1]",
+          answerSource: "model",
+          model: "gemma4:12b",
+          trace: [entry],
+          rounds: 1,
+          durationMs: 42,
+          persistenceStatus: "not-persisted",
+        },
+      })}\n`));
+      streamController?.close();
+    });
+
+    expect(await screen.findByText("Evidence inspected. [evidence:1]")).toBeTruthy();
+    expect(screen.getByText("Grounded")).toBeTruthy();
+  });
+
   it("refreshes evidence when a saved asset is selected", async () => {
     const secondAsset = { id: "field-2", name: "Sierra Field", category: "field", location: { lat: 36.7, lon: -119.8 }, radiusKm: 25 };
     const agentBodies: Array<Record<string, unknown>> = [];

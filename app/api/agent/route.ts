@@ -112,15 +112,57 @@ export async function POST(request: Request): Promise<Response> {
         },
       );
     const config = getRuntimeConfig(environment);
-    const result = await runAgent({
+    const runInput = {
       ...parsed.data,
       repository,
       snapshotService,
       fetchImpl: fetch,
       ollamaBaseUrl: config.ollama.baseUrl,
       mode,
-      signal: request.signal,
-    });
+    };
+    const wantsProgressStream = request.headers.get("accept")
+      ?.toLowerCase()
+      .includes("application/x-ndjson") ?? false;
+
+    if (wantsProgressStream) {
+      const encoder = new TextEncoder();
+      const runController = new AbortController();
+      const abortRun = () => runController.abort();
+      if (request.signal.aborted) abortRun();
+      else request.signal.addEventListener("abort", abortRun, { once: true });
+      const releaseStream = release;
+      release = null;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          void runAgent({
+            ...runInput,
+            signal: runController.signal,
+            onProgress(event) {
+              controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+            },
+          }).then(
+            () => controller.close(),
+            (error) => controller.error(error),
+          ).finally(() => {
+            request.signal.removeEventListener("abort", abortRun);
+            releaseStream?.();
+          });
+        },
+        cancel() {
+          abortRun();
+        },
+      });
+
+      return new Response(stream, {
+        headers: {
+          "Cache-Control": "no-store",
+          "Content-Type": "application/x-ndjson; charset=utf-8",
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    }
+
+    const result = await runAgent({ ...runInput, signal: request.signal });
 
     return Response.json(result, {
       headers: { "Cache-Control": "no-store" },

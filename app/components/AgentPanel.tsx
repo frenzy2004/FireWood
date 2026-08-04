@@ -13,6 +13,7 @@ import type { DashboardSnapshot, IntegrationStatus } from "../hooks/use-dashboar
 // in the panel returned a fallback.
 const starters = ["When would smoke reach here?", "Which of my sites is in trouble?", "What evidence is missing?"];
 type Trace = { toolName?: string; function?: string; arguments?: unknown; validatedArguments?: unknown; durationMs?: number; sourceStatus?: unknown; resultSummary?: unknown; status?: string };
+type AgentProgress = { round: number | null; completedTool: { name: string; durationMs?: number } | null };
 type AgentRunStatus = "ok" | "offline" | "timeout" | "round-limit" | "grounding-error" | "evidence-answer" | "error";
 const runStatusLabels: Record<AgentRunStatus, string> = {
   ok: "Grounded",
@@ -53,6 +54,7 @@ function AgentPanelContent({
   const [trace, setTrace] = useState<Trace[]>([]);
   const [showTrace, setShowTrace] = useState(false);
   const [runStatus, setRunStatus] = useState<AgentRunStatus | null>(null);
+  const [progress, setProgress] = useState<AgentProgress>({ round: null, completedTool: null });
   const requestRef = useRef<{ sequence: number; controller: AbortController } | null>(null);
   const sequenceRef = useRef(0);
   const assetId = selectedAssetId ?? snapshot?.asset.id;
@@ -62,6 +64,66 @@ function AgentPanelContent({
     sequenceRef.current += 1;
     requestRef.current?.controller.abort();
   }, []);
+
+  const applyResultPayload = (payload: Record<string, unknown>) => {
+    const nextStatus = isAgentRunStatus(payload.status) ? payload.status : "ok";
+    setRunStatus(nextStatus);
+    setAnswer(typeof payload.answer === "string"
+      ? payload.answer
+      : asRecord(payload.message) && typeof asRecord(payload.message)?.content === "string"
+        ? String(asRecord(payload.message)?.content)
+        : "Gemma returned no prose response. Review the deterministic evidence panels and try again.");
+    setTrace(Array.isArray(payload.trace) ? payload.trace as Trace[] : []);
+  };
+
+  const consumeProgressStream = async (response: Response, sequence: number) => {
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("Gemma returned an empty progress stream.");
+    const decoder = new TextDecoder();
+    let buffered = "";
+    let completed = false;
+
+    const consumeLine = (line: string) => {
+      if (!line.trim()) return;
+      const event = asRecord(JSON.parse(line));
+      if (!event || sequenceRef.current !== sequence) return;
+      if (event.type === "round-start" && typeof event.round === "number") {
+        setProgress({ round: event.round, completedTool: null });
+        return;
+      }
+      if (event.type === "tool-complete") {
+        const entry = asRecord(event.entry);
+        if (!entry) return;
+        const item = entry as Trace;
+        setTrace((current) => [...current, item]);
+        setProgress((current) => ({
+          round: current.round,
+          completedTool: {
+            name: typeof item.toolName === "string" ? item.toolName : "local tool",
+            ...(typeof item.durationMs === "number" ? { durationMs: item.durationMs } : {}),
+          },
+        }));
+        return;
+      }
+      if (event.type === "complete") {
+        const result = asRecord(event.result);
+        if (!result) throw new Error("Gemma returned an invalid completion event.");
+        completed = true;
+        applyResultPayload(result);
+      }
+    };
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      buffered += decoder.decode(value, { stream: !done });
+      const lines = buffered.split("\n");
+      buffered = lines.pop() ?? "";
+      for (const line of lines) consumeLine(line);
+      if (done) break;
+    }
+    consumeLine(buffered);
+    if (!completed) throw new Error("Gemma progress ended without a final result.");
+  };
 
   const ask = async (nextPrompt: string) => {
     const cleaned = nextPrompt.trim();
@@ -81,30 +143,29 @@ function AgentPanelContent({
     setTrace([]);
     setShowTrace(false);
     setRunStatus(null);
+    setProgress({ round: null, completedTool: null });
     try {
       const response = await fetch("/api/agent", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" },
         body: JSON.stringify({ prompt: cleaned, assetId, mode }),
         signal: controller.signal,
       });
-      const payload = asRecord(await response.json().catch(() => null));
       if (!response.ok) {
+        const payload = asRecord(await response.json().catch(() => null));
         const message = typeof payload?.error === "string" ? payload.error : "Gemma is unavailable. Deterministic evidence remains available.";
         throw new Error(message);
       }
+      if (response.headers.get("content-type")?.toLowerCase().includes("application/x-ndjson")) {
+        await consumeProgressStream(response, sequence);
+        return;
+      }
+      const payload = asRecord(await response.json().catch(() => null));
       if (!payload) {
         throw new Error("Gemma returned an invalid response. Deterministic evidence remains available.");
       }
       if (sequenceRef.current !== sequence) return;
-      const nextStatus = isAgentRunStatus(payload?.status) ? payload.status : "ok";
-      setRunStatus(nextStatus);
-      setAnswer(typeof payload?.answer === "string"
-        ? payload.answer
-        : asRecord(payload?.message) && typeof asRecord(payload?.message)?.content === "string"
-          ? String(asRecord(payload?.message)?.content)
-          : "Gemma returned no prose response. Review the deterministic evidence panels and try again.");
-      setTrace(Array.isArray(payload?.trace) ? payload.trace as Trace[] : []);
+      applyResultPayload(payload);
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === "AbortError") return;
       if (sequenceRef.current !== sequence) return;
@@ -132,7 +193,7 @@ function AgentPanelContent({
     <div className="panel-heading"><div><p className="eyebrow">Evidence assistant</p><h2><Sparkle size={18} /> Gemma 4 12B · local</h2></div><span className={`agent-run-status status-${runStatus ?? ollamaStatus ?? "checking"}`}>{displayedStatus}</span></div>
     <div className="starter-row">{starters.map((starter) => <button key={starter} onClick={() => void ask(starter)} disabled={pending || !snapshot}>{starter}</button>)}</div>
     <form onSubmit={(event) => { event.preventDefault(); void ask(prompt); }}><label className="sr-only" htmlFor={promptId}>Ask Gemma about this asset</label><div className="agent-input"><input id={promptId} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Ask for a grounded briefing" disabled={!snapshot} /><button type="submit" aria-label="Send prompt" title="Send prompt" disabled={pending || !snapshot}><PaperPlaneTilt size={19} /></button></div></form>
-    {pending ? <div className="agent-pending"><CircleNotch size={18} className="spin" /> Gemma is reviewing local evidence and source freshness.</div> : null}
+    {pending ? <div className="agent-pending" aria-live="polite"><CircleNotch size={18} className="spin" /><span className="agent-progress-copy">{progress.round === null ? "Starting local Gemma and preparing native tools." : <><strong>Round {progress.round}</strong>{progress.completedTool ? <small>{progress.completedTool.name} completed{progress.completedTool.durationMs === undefined ? "" : ` in ${progress.completedTool.durationMs} ms`}.</small> : <small>Gemma is choosing a native evidence tool.</small>}</>}</span></div> : null}
     {answer ? <p className="agent-answer">{answer}</p> : null}
     <button className="trace-toggle" onClick={() => setShowTrace((value) => !value)} aria-expanded={showTrace} aria-controls={traceId}>Visible tool trace <CaretDown size={16} className={showTrace ? "turned" : ""} /></button>
     {showTrace ? <div className="trace-list" id={traceId}>{trace.length ? trace.map((item, index) => <div className="trace-entry" key={`${item.toolName ?? item.function ?? "tool"}-${index}`}><div><strong>{item.toolName ?? item.function ?? "local tool"}</strong><span>{item.durationMs != null ? `${item.durationMs} ms` : "completed"} · {item.status ?? "completed"}</span></div><small>Safe arguments: {traceText(item.validatedArguments ?? item.arguments)}</small><small>Sources: {traceText(item.sourceStatus)}</small><small>Result: {traceText(item.resultSummary)}</small></div>) : <p className="quiet">No tool calls have been returned for this response.</p>}</div> : null}

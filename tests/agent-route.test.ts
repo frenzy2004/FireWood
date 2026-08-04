@@ -92,4 +92,57 @@ describe("agent route local boundary", () => {
 
     expect(response.status).toBe(200);
   });
+
+  it("streams ordered real agent progress as NDJSON", async () => {
+    const ollamaResponses = [
+      {
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "call-inspect",
+            type: "function",
+            function: { index: 0, name: "inspect_asset", arguments: {} },
+          }],
+        },
+      },
+      { message: { role: "assistant", content: "Review complete." } },
+    ];
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(ollamaResponses.shift())));
+
+    const response = await agentRoute(
+      new Request("http://localhost/api/agent", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/x-ndjson",
+        },
+        body: JSON.stringify({
+          prompt: "What evidence is missing?",
+          assetId: DEMO_ASSET.id,
+          mode: "fixture",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("application/x-ndjson");
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+    expect(events.map((event) => event.type)).toEqual([
+      "round-start",
+      "tool-complete",
+      "round-start",
+      "complete",
+    ]);
+    expect(events[0]).toMatchObject({ type: "round-start", round: 1 });
+    expect(events[1]).toMatchObject({
+      type: "tool-complete",
+      entry: { toolName: "inspect_asset", status: "ok" },
+    });
+    expect(events[3]).toMatchObject({
+      type: "complete",
+      result: { model: "gemma4:12b", rounds: 2 },
+    });
+    expect(events[3].result.trace[0]).toEqual(events[1].entry);
+  });
 });
