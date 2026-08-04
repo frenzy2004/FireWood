@@ -34,7 +34,7 @@ Ask:
 
 While Gemma runs, say:
 
-"This is the actual Gemma 4 12B model running through local Ollama. The prompt, inference, and asset notes stay off hosted AI services. Live tools still send the necessary geography to the selected public source. Gemma is not decorating a fixed report. It chooses from ten schema-validated tools, including live Census geocoding, can gather evidence over several rounds, and must ground its answer in returned values."
+"This is the actual Gemma 4 12B model running through local Ollama. The prompt, inference, and asset notes stay off hosted AI services. Live tools still send the necessary geography to the selected public source. Gemma is not decorating a fixed report. It chooses from eleven schema-validated tools, including live Census geocoding and a validated smoke-arrival estimate, can gather evidence over several rounds, and must ground its answer in returned values."
 
 Expand the tool trace. Point out function names, validated arguments, duration, and source state. Read one concise sentence from the final briefing.
 

@@ -14,9 +14,52 @@ Gemma chooses from an allowlisted set of evidence tools, explains current condit
 - Groups nearby detections into activity clusters while retaining every raw observation.
 - Adds wind, humidity, AQI, and nearby official incident context.
 - Computes an explainable context score with explicit missing-data gating.
+- Estimates when smoke from each detection group reaches the asset, validated against the 2018 Camp Fire.
 - Shows raw points, grouped activity, official perimeters, source freshness, and a 24-hour timeline.
 - Produces deduplicated in-console alerts during load or refresh for new groups, new satellite confirmation, resumed activity, material score changes, and official matches.
 - Runs Gemma 4 12B locally through Ollama native function calling.
+
+## Run the Camp Fire replay
+
+No API keys, no Ollama, no network:
+
+```bash
+npm install
+npm run replay
+```
+
+This reconstructs 8 November 2018 and shows the console as it would have looked
+30 minutes after the Camp Fire started. The air at a farm 104 km downwind is
+still clean; the smoke-advection estimate already places arrival at 19:10 UTC,
+**4.2 hours of warning**.
+
+The EPA monitor at those exact coordinates recorded arrival 6.5 hours after
+ignition. The estimate was 4.7 hours — **1.8 hours early**, which is the safe
+direction to be wrong.
+
+### How the estimate is validated
+
+Straight-line advection from the detection centroid using measured wind, gated
+on whether the asset sits inside the plume corridor. Wind comes from NASA POWER
+(keyless, 50 m, hourly). Ground truth comes from EPA AirData hourly PM2.5, taken
+as the first hour each monitor exceeded three times its own pre-fire median.
+
+Across 14 California monitors between 104 km and 262 km:
+
+```
+raw advection      median +1.4h   mean |error| 2.3h
+after correction   median +0.0h   mean |error| 1.6h
+```
+
+No monitor was warned more than 2.2 hours late. Two of the fourteen are badly
+wrong regardless — both early, both attributable to coastal-range terrain
+channelling. All fourteen, including the failures, are kept in
+`tests/smoke.test.ts`. A validation fixture that drops its failures is not a
+validation.
+
+Confidence is capped at `moderate` permanently, and every estimate states that
+it is not a fire-spread prediction. EmberField does not predict where a fire
+goes; it estimates where the smoke from an already-detected fire is heading.
 
 ## Prerequisites
 
@@ -67,6 +110,7 @@ Open the local URL printed by Vinext. EmberField loads the Antelope Creek Ranch 
 ## Commands
 
 ```bash
+npm run replay       # Camp Fire replay — offline, no keys, no model
 npm run dev          # local Vinext and Cloudflare development server
 npm run db:local     # apply versioned migrations to local D1 state
 npm run test:unit    # unit, route, agent, and UI tests

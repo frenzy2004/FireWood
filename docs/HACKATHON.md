@@ -22,6 +22,42 @@ The app deliberately separates facts from interpretation:
 - The UI names missing inputs and source failures instead of silently assigning zero.
 - Safety language avoids confirmed-fire, spread-prediction, and evacuation claims.
 
+## The claim we can actually prove
+
+Every air-quality product is a sensor: it tells you the air is bad once it
+already is. By then the crew has been outside for hours.
+
+Smoke has a source that VIIRS detects, a direction and a speed that wind data
+gives, and therefore an arrival time. EmberField estimates it, and the estimate
+is checkable against an event that already happened.
+
+`npm run replay` reconstructs 8 November 2018 with no keys, no Ollama and no
+network. Thirty minutes after the Camp Fire started, the air at a farm 104 km
+downwind reads AQI 18 — clean. The console already places smoke arrival at
+19:10 UTC: **4.2 hours of warning**.
+
+The EPA monitor at those exact coordinates recorded arrival 6.5 hours after
+ignition. The estimate was 4.7 hours. **1.8 hours early** — the safe direction.
+
+Across 14 California monitors from 104 km to 262 km, using NASA POWER 50 m wind
+and EPA AirData PM2.5 as ground truth:
+
+```
+raw advection      median +1.4h   mean |error| 2.3h
+after correction   median +0.0h   mean |error| 1.6h
+```
+
+No monitor was warned more than 2.2 hours late. Two of the fourteen are badly
+wrong, both early, both terrain channelling — and both are kept in the test
+suite. A validation fixture that drops its failures is not a validation.
+
+**The line we do not cross.** We will not predict where a fire goes. Fire spread
+is genuinely hard and getting it wrong is dangerous. Smoke advection from an
+already-detected source is a different and far more tractable problem, and
+naming that distinction is the difference between a defensible tool and a
+liability. Confidence is capped at `moderate` permanently, and every estimate
+says in its own words that it is not a fire-spread prediction.
+
 ## Why Gemma is core, not decorative
 
 Gemma 4 12B is the primary intelligence in the operator workflow. A prompt such as "Brief me on the orchard and explain what changed" does not map to a hard-coded answer. Gemma uses native function calling to choose among allowlisted tools for farm assets, detection groups, weather, air quality, official incidents, the 24-hour timeline, and score explanations. It can gather more evidence over several rounds before synthesizing its response.
