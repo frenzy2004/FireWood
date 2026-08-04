@@ -34,7 +34,8 @@ export const agentRequestSchema = z
   .strict();
 
 export const AGENT_SYSTEM_PROMPT = `You are EmberField's local agricultural evidence assistant.
-Use only values returned by the provided tools. Every condition or source assertion in a final briefing must cite a successful tool's server-issued evidenceRef exactly as [evidence:REF]. Never cite a failed call. Call satellite heat anomalies "detections", never confirmed fires unless an official incident tool confirms one. Name missing, stale, partial, missing-key, error, live, and fixture source states explicitly. Do not invent observations, alter deterministic scores, predict spread, or issue evacuation, dispatch, firefighting, or protection-of-life or property instructions. You may suggest low-risk questions for farm continuity planning. Follow local emergency officials and NWS alerts. Data may be delayed, incomplete, or inaccurate.`;
+Use only values returned by the provided tools. Every condition or source assertion in a final briefing must cite a successful tool's server-issued evidenceRef exactly as [evidence:REF]. Never cite a failed call. Call satellite heat anomalies "detections", never confirmed fires unless an official incident tool confirms one. Name missing, stale, partial, missing-key, error, live, and fixture source states explicitly. Do not invent observations, alter deterministic scores, predict spread, or issue evacuation, dispatch, firefighting, or protection-of-life or property instructions. You may suggest low-risk questions for farm continuity planning. Follow local emergency officials and NWS alerts. Data may be delayed, incomplete, or inaccurate.
+When you state a number, name the quantity in the same sentence using the tool's own wording, so the claim can be checked against its evidence. Write "the distance is 103.6 km", not "103.6 km away"; write "arrives in 4.2 hours" or "transit time is 4.3 hours", not "4.2 hours out". Prefer short sentences that carry one fact each.`;
 
 export type AgentRunStatus =
   | "ok"
@@ -328,6 +329,29 @@ const FIELD_LABEL_ALIASES: Record<string, string[]> = {
   dataConfidence: ["data confidence"],
   distinctPasses24h: ["distinct passes", "passes"],
   bearingClusterToAsset: ["bearing", "bearing to asset"],
+  // Smoke-advection fields. Without these the raw camelCase label is the only
+  // way to ground a number, so natural phrasing such as "arrives in 4.2 hours"
+  // could never match its own evidence and every briefing fell back.
+  hoursUntilArrival: [
+    "hours until arrival",
+    "arrives in",
+    "arrival in",
+    "estimated arrival",
+    "arrival",
+    "lead time",
+    "hours of warning",
+    "warning",
+  ],
+  transitHours: ["transit", "transit time", "travel time", "corrected transit"],
+  rawTransitHours: ["raw transit", "uncorrected transit"],
+  transportBearingDeg: [
+    "transport bearing",
+    "transport direction",
+    "heading toward",
+    "toward",
+  ],
+  offAxisDeg: ["off axis", "off the transport bearing", "degrees off"],
+  assetBearingDeg: ["asset bearing", "bearing to asset"],
 };
 
 const SOURCE_SELECTOR_ALIASES: Record<string, string[]> = {
@@ -375,6 +399,27 @@ function sourceSelector(value: unknown): string | null {
   );
 }
 
+const ISO_TIMESTAMP_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z?$/;
+
+/**
+ * Calendar and clock components of an ISO timestamp.
+ *
+ * `numericClaims` cannot reach some of these: its lookbehind rejects the hour
+ * in `T19`, and a fractional second indexes as `42.523` rather than `42`. A
+ * briefing that quotes a time as "19:10:42 on November 8" was therefore
+ * ungroundable against the very timestamp it came from, for every tool that
+ * returns one.
+ *
+ * Strictly additive — only surfaces values already present in the evidence.
+ */
+function isoTimestampComponents(value: string): number[] {
+  const match = ISO_TIMESTAMP_PATTERN.exec(value.trim());
+  if (!match) return [];
+  const [, year, month, day, hour, minute, second] = match;
+  return [year, month, day, hour, minute, second].map(Number);
+}
+
 function addEvidenceValue(
   index: EvidenceIndex,
   value: unknown,
@@ -417,6 +462,9 @@ function addEvidenceValue(
     addLexicalTerms(index.terms, value);
     for (const claim of numericClaims(value)) {
       index.numbers.push({ value: claim.value, labels: fieldLabels(path) });
+    }
+    for (const component of isoTimestampComponents(value)) {
+      index.numbers.push({ value: component, labels: fieldLabels(path) });
     }
     if ((field === "mode" || field === "status") && value.trim()) {
       index.states.push({
