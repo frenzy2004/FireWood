@@ -161,7 +161,9 @@ minutes.
 3. `npm run dev` in its own terminal. Open the URL it prints, on 127.0.0.1.
 4. In the asset rail, select **Colusa County Orchard (Camp Fire replay)**.
 5. Confirm the mode switch reads **Fixture data**.
-6. Confirm the Gemma tool trace is collapsed, and the browser has no other tabs.
+6. Press **Asset**, **Evidence**, and **Threat** once each. Confirm that every
+   control reframes the map and leave **Asset** selected.
+7. Confirm the Gemma tool trace is collapsed, and the browser has no other tabs.
 
 Selecting the Camp Fire asset pins the console to the same evaluation instant as
 the terminal replay, so every number on screen matches the numbers you just
@@ -176,6 +178,13 @@ Switch from the terminal to the browser without changing the story.
 > kilometres upwind is visible at all. The amber points are the raw VIIRS
 > detections; each is the centre of a roughly 375 metre pixel, not a fire
 > perimeter."
+
+Press **Evidence**, then **Threat**, without pausing the narration.
+
+> "This is an operational map rather than a poster. Asset frames the place we
+> protect, Evidence fits every returned source, and Threat follows the active
+> detection group. Selecting a satellite point opens its exact timestamp,
+> confidence, radiative power, coordinates, and a one-click camera focus."
 
 Point at the amber wedge opening away from the detections.
 
