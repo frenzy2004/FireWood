@@ -1,8 +1,8 @@
 # EmberField verification record
 
-Verification date: 2026-08-04 MYT
+Verification date: 2026-08-05 MYT
 
-Baseline: final `feature/emberfield` release candidate
+Baseline: final `revamp` release candidate
 
 This record separates deterministic verification, live external-source observations, and actual local-model evidence. External results can change at any time.
 
@@ -18,6 +18,19 @@ Snapshot persistence and historical replay status: **COMPLETE FOR THE LOCAL PROT
 | `npm run db:local` | Passed; all versioned migrations applied, and the repeat run reported no pending migrations |
 
 The build emitted one non-blocking warning about client chunks larger than 500 kB after minification.
+
+### Interactive command-map verification
+
+The final `revamp` browser pass was repeated after the interactive map work landed:
+
+| Check | Recorded result |
+| --- | --- |
+| `npm test` | Passed: 27 test files, 323 tests |
+| `npm run lint` | Passed with no ESLint findings |
+| `npm run build` | Passed; Vinext produced the app and seven API routes |
+| `git diff --check` | Passed with no whitespace errors |
+
+Computer Use verification covered both the Safari fallback view and the full MapLibre view in Chrome for Testing. Asset, Evidence, and Threat camera modes framed the intended geometry; satellite markers opened evidence dossiers; dossier focus returned the camera to the selected observation; timeline event selection filtered evidence to the exact UTC cutoff; and replay playback advanced the map, inspector, and threat focus together. Live mode refreshed each configured source independently, fixture mode restored the deterministic Camp Fire replay, and a real local Gemma request selected `get_smoke_arrival` and exposed its validated arguments and evidence result in the visible tool trace.
 
 The test suite covers source parsing, request timeouts and size limits, cache behavior, geometry and perimeter-radius intersection, clustering, repeated-pass scoring, alert deduplication, bounded persistence, source composition, repository behavior, fixture identity isolation, native Gemma Census geocoding, tool orchestration and claim grounding, redaction, UI state, replay behavior, and accessibility-oriented interactions.
 
